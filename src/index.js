@@ -3,7 +3,7 @@ import { ingest, status, assemble } from './workflow.js'
 import { loadRules, validateOutline } from './rules.js'
 
 export const name = 'wlyd-material-knowledge-assembly'
-export const inject = ['tools', 'llm']
+export const inject = ['tools', 'llm', 'fs']
 const output = { schema: { type: 'object', additionalProperties: true, properties: {} },
   render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] }
 const card = (title, kind, rawInput = {}) => ({ card: 'generic', title, kind, rawInput })

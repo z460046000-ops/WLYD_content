@@ -19,10 +19,10 @@
 
 ## 安装
 
-需要 Node.js 22+ 和 DSH。安装包见 `releases/wlyd-dsh-material-knowledge-assembly-0.1.2.tgz`。
+需要 Node.js 22+ 和 DSH。安装包见 `releases/wlyd-dsh-material-knowledge-assembly-0.1.6.tgz`。
 
 ```bash
-dsh plugin --profile <profile> add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.1.2.tgz
+dsh plugin --profile <profile> add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.1.6.tgz
 dsh --profile <profile> --dump-config
 ```
 
@@ -41,7 +41,7 @@ dsh --profile <profile> --dump-config
 
 ## 当前边界
 
-- 插件入口允许每批最多 100 个文件、单文件至 500 MB，按文件顺序转换；ZIP 最多 1000 个条目、展开总量 1 GB，以防压缩炸弹。支持 UTF-8 文本、DOCX、文字 PDF、PPTX、XLSX、限额 ZIP；图片与扫描 PDF 返回 `needs_ocr`。DMG 返回 `unsupported`，不挂载也不运行应用；旧 Office、音视频和链接抓取尚未实现。
+- 插件入口允许每批最多 100 个文件、单文件至 500 MB，按文件顺序转换；ZIP 最多 1000 个条目、展开总量 1 GB，以防压缩炸弹。支持 UTF-8 文本、DOCX、文字 PDF、PPTX、XLSX、限额 ZIP；扩展名为文本但含大量二进制控制字符的文件返回 `unsupported`，不上传乱码。图片与扫描 PDF 返回 `needs_ocr`。DMG 返回 `unsupported`，不挂载也不运行应用；旧 Office、音视频和链接抓取尚未实现。
 - 只使用已完成解析的项目绑定知识文档；HTTP 202 仅代表上传已接收。多目标须指定，不会自动选公共库。
 - 仅从可信 DSH 会话结构填 `actorDshId`；`platformUserId` 暂为空。当前平台 API 用配置账号登录，不能声称后台已按真实用户归属上传。
 - 模型只通过引用 ID 与逐字引文做机器校验；语义是否被证据充分支持、案例是否可公开仍需人工审核。无可核对正文时不交付空稿。

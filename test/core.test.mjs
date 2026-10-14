@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import JSZip from 'jszip'
 import { convertFile, MAX_BYTES } from '../src/convert.js'
+import { inject } from '../src/index.js'
 import { loadRules, validateOutline } from '../src/rules.js'
 import { PlatformClient } from '../src/platform.js'
 import { validateDraft } from '../src/workflow.js'
@@ -18,6 +19,7 @@ test('完整原件可提取文本，扫描/图片/DMG 与乱码逐文件诚实�
   assert.deepEqual(result.map(item => item.status), ['converted', 'needs_ocr'])
   assert.match(result[0].markdown, /面向企业客户/u)
   assert.equal((await convertFile('broken.txt', Buffer.from([0xff])))[0].status, 'failed')
+  assert.equal((await convertFile('binary.md', Buffer.from(('\u0001\u0002正文\n').repeat(100))))[0].status, 'unsupported')
   assert.equal((await convertFile('image.png', Buffer.from([1])))[0].status, 'needs_ocr')
   assert.equal((await convertFile('app.dmg', Buffer.from([1])))[0].status, 'unsupported')
   assert.equal((await convertFile('scan.pdf', Buffer.from('%PDF-bad')))[0].status, 'failed')
@@ -87,6 +89,31 @@ test('单文件入口允许 500 MB，按文件顺序处理，超出上限逐文�
   assert.deepEqual(result.files.map(file => file.status), ['converted', 'failed'])
   assert.deepEqual(limits, [MAX_BYTES])
   assert.match(result.files[1].reason, /500 MB/u)
+})
+
+test('DSH 服务声明允许工作区文件读取，附件经可选服务读取', async () => {
+  assert.ok(inject.includes('fs'))
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'wlyd-inject-test-'))
+  const attachment = { attachmentId: 'test-attachment', name: 'attached.md', bytes: 18 }
+  const agent = { session: { header: { cwd }, deriveMessages: () => [{
+    source: { kind: 'user' }, content: [{ type: 'file', attachment }],
+  }] } }
+  const exec = { agent, signal: new AbortController().signal }
+  const services = {
+    fs: { resolve: async value => value, stat: async () => ({ type: 'file', size: 18 }),
+      readBytes: async () => Buffer.from('工作区材料可以读取。') },
+    attachments: { async *readFileStream() { yield Buffer.from('会话附件可以读取。') } },
+  }
+  const ctx = new Proxy({ get: name => services[name] }, { get(target, name) {
+    if (name === 'fs' && !inject.includes('fs')) throw new Error('cannot get property "fs" without inject')
+    if (name === 'attachments') throw new Error('cannot get property "attachments" without inject')
+    return name in services ? services[name] : target[name]
+  } })
+  const client = { projects: async () => { throw new Error('平台未配置') } }
+  const result = await ingest({ ctx, client, args: { files: ['local.md'], attachment_refs: [attachment] }, exec })
+  assert.equal(result.status, 'local_only')
+  assert.deepEqual(result.files.map(file => file.status), ['converted', 'converted'])
+  assert.ok(result.files.every(file => file.materialPath))
 })
 
 test('宽泛查询保留非提取问题命中的所有片段并传给模型', async () => {
@@ -182,7 +209,7 @@ test('本地材料到报告保留来源、待确认候选与缺章；平台不�
       ...Array.from({ length: 20 }, (_, index) => `补充材料 ${index + 1}：${'业务信息'.repeat(340)}`)].join('\n\n')),
   } }
   const client = { projects: async () => { throw new Error('平台未配置') } }
-  const source = await ingest({ ctx, client, args: { files: ['input.md'] }, exec })
+  const source = await ingest({ ctx, client, args: { files: ['客户资料.md'] }, exec })
   assert.equal(source.status, 'local_only')
   assert.equal(source.files[0].status, 'converted')
   assert.equal(source.files[0].uploadStatus, undefined)
@@ -214,7 +241,7 @@ test('本地材料到报告保留来源、待确认候选与缺章；平台不�
   assert.ok(materialPieces > 12)
 })
 
-test('唯一授权项目默认上传；未解析完成只记录 pending，查询后变 completed', async () => {
+test('唯一授权项目默认上传；pending 和 finalizing 均能查询到 completed', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'wlyd-upload-test-'))
   const agent = { session: { header: { cwd } } }
   const exec = { agent, signal: new AbortController().signal }
@@ -222,14 +249,17 @@ test('唯一授权项目默认上传；未解析完成只记录 pending，查询
     stat: async () => ({ type: 'file', size: 50 }),
     readBytes: async () => Buffer.from('产品用于企业客户线索协作。') } }
   const uploads = []
+  let checks = 0
   const client = { projects: async () => [{ id: 'P1' }], visibleProjectBases: async () => ['K1'],
     upload: async (p, b, name, markdown) => { uploads.push({ p, b, name, markdown }); return { status: 202, data: { id: 'D1', parse_status: 'pending' }, requestId: 'R1' } },
-    knowledge: async () => ({ parse_status: 'completed' }) }
+    knowledge: async () => ({ parse_status: ++checks === 1 ? 'finalizing' : 'completed' }) }
   const result = await ingest({ ctx, client, args: { files: ['input.md'] }, exec })
   assert.equal(result.status, 'uploaded_or_pending')
   assert.equal(result.files[0].uploadStatus, 'pending')
   assert.equal(uploads.length, 1)
   assert.deepEqual([uploads[0].p, uploads[0].b], ['P1', 'K1'])
+  const interim = await (await import('../src/workflow.js')).status({ client, runId: result.runId, agent })
+  assert.equal(interim.files[0].uploadStatus, 'finalizing')
   const refreshed = await (await import('../src/workflow.js')).status({ client, runId: result.runId, agent })
   assert.equal(refreshed.files[0].uploadStatus, 'completed')
 })

@@ -19,3 +19,29 @@
 - 用户要求单文件可到 500 MB，内容上下文先不在插件压缩，由 DSH 平台处理；`extractQuestions` 只作为重点，其他有价值材料一并交模型判断。
 - 插件入口提高到 500 MB，逐文件读取转换；删除 20 万字、前 12 段、前 24 个知识片段等插件内截断。知识库宽泛检索加章节检索，单次请求 50 条，不裁切命中正文；落盘 Markdown 以文件流上传。
 - 12 项定向测试通过。真实 500 MB 文件、后台请求上限和模型上下文未联调，不能宣称全链路支持任意 500 MB 格式。
+
+## 2026-10-14：本机 DSH Web 试用安装
+
+- 将 `releases/wlyd-dsh-material-knowledge-assembly-0.1.2.tgz` 安装到本机 DSH `web` profile（`~/.dsh/profiles/web`）。安装前备份了该 profile 的 `package.json`、`pnpm-lock.yaml`、`cordis.patch.yml` 到 `/tmp/dsh-web-preassembly-20261014/`；未改 DSH 源码或原有插件。
+- `package.json` 的 `dsh.profile.bundles` 与 `dependencies` 均包含 `@wlyd/dsh-material-knowledge-assembly`；`dsh --profile web --dump-config` 包含 Cordis ID `wlyd-material-knowledge-assembly`。重启后本机服务监听 `127.0.0.1:3080`，未登录的 HTTP 请求返回 401（服务正常要求认证）。
+- 已登录的 DSH Web 插件页显示 `material-knowledge-assembly v0.1.2` 已启用，组件 `wlyd-material-knowledge-assembly` 为“运行中”；这证实 Cordis 运行态已加载。实际对话调用 `wlyd_assembly_outline`、材料上传、后台同步和模型成稿仍待用户在该页面试用。
+
+## 2026-10-14：下一阶段方案待确认
+
+- 下一阶段建议先做 DSH Web 中的真实小文件链路：目录预览、会话附件读取、转换、明确目标项目后的上传和解析、检索、模型组稿，再根据实测问题做最小修复和重新打包。此方案尚待用户确认，未开始实现。
+- 静态检查发现 `src/workflow.js` 的导入路径使用 `ctx.fs` 与附件服务，而 `src/index.js` 当前只声明注入 `tools`、`llm`；需结合 DSH 的实际附件服务契约及 Web 试用结果判断是否要补充依赖声明。真实 500 MB 内存峰值仍未验证。
+
+## 2026-10-14：导入故障修复
+
+- 本机 DSH Web 运行 `5fec9e84-7df6-44bc-978d-be887f6614f7` 的 4 个文件均在读取阶段报 `cannot get property "fs" without inject`，`materials/` 为 0；首要故障是插件缺 `fs` 注入，和文件格式无关。`src/index.js` 已补 `fs` 依赖，附件通过 `ctx.get?.('attachments')` 读取，避免未声明服务的直接属性访问。
+- 同批 3 份 `.md` 实为二进制数据；旧转换器会把它们当文本并产生乱码。`src/convert.js` 增加控制字符抽样检查，3 份原样文件只读试算均返回 `unsupported`。完整原件需要用户在 DSH 中重新选择，不能把这些损坏副本作为组稿依据。
+- 发布 `0.1.4` 并安装到本机 DSH `web` profile，语法检查和 13 项测试通过，SHA-256 清单通过。重启后 3080 服务已恢复；真实 Web 导入重试仍待核对。
+- 实际 Web 重试运行 `537ab5b0-3014-450f-92cb-4b8510d160ee` 已证明注入修复生效：3 份损坏 `.md` 为 `unsupported`，1 份 PDF 转换并提交后台。后台返回 `finalizing`；原状态工具未继续刷新该阶段，已在 `0.1.5` 修复为查询所有尚未完成的已上传文档。后台是否最终 `completed` 尚待核对。
+
+## 2026-10-14：真实 Web 链路进度与下一步
+
+- 同一 DSH Web 会话把 4 份可读清洗材料重新导入；运行 `5628498a-83ba-41f4-bb2f-4ac3f21f217d` 最近状态为 1 份 `completed`、3 份 `finalizing`。两次组稿运行 `c4a10fe1-6c4b-4c21-9183-df4110c30d53` 和 `78e5fa08-1023-4f38-86bd-1cc3947ead30` 均落盘 `evidence.json` 后报「模型未正常完成」，未产生报告；运行态未记录结束原因。
+- `0.1.5` 安装包已进入本机 `web` profile，SHA-256 `a841d33d6adf745b075d028a2ae3ea1d8f4d99718b1e040c353016de5ce384ea`；因当前 DSH 组稿仍在执行，尚未重启服务加载新版本。代码语法、13/13 测试、差异空白检查和发布包校验均通过。
+- 首次组稿的证据只有知识库片段，`gaps` 恰有 4 个「材料路径不合法」；原因是组稿读取仅接受英文文件名，而转换保存了中文文件名。`0.1.6` 放宽到转换器同一套 Unicode 字母数字规则，同时保留子目录与 `..` 拦截；模型失败信息补充结束原因与输出长度。中文材料名的本地到报告测试已通过。
+- 待 DSH 会话停止执行后，安装并加载 `0.1.6`；查询 `finalizing` 是否转为终态，重跑组稿读取模型结束原因。成功成稿后检查证据引用、章节和关联链，再决定是否修订规则。后续才进入章节编辑确认与 HTML 渲染，PPT/PDF 导出仍不在当前 MVP 范围。
+- 本地修复提交已产生；GitHub 443 连接超时，推送尚未完成，后续需重试。

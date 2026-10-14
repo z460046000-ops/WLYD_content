@@ -12,6 +12,20 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const clean = value => String(value).replace(/\u0000/gu, '').replace(/\r\n?/gu, '\n').trim()
 const decodeXml = text => text.replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&quot;/gu, '"').replace(/&apos;/gu, "'").replace(/&amp;/gu, '&')
 const stripHtml = text => decodeXml(text.replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, ' ').replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, ' ').replace(/<[^>]+>/gu, ' '))
+function looksBinaryText(bytes) {
+  const width = 64 * 1024
+  const starts = new Set([0, Math.max(0, Math.floor((bytes.length - width) / 2)), Math.max(0, bytes.length - width)])
+  let checked = 0
+  let controls = 0
+  for (const start of starts) {
+    for (let index = start; index < Math.min(bytes.length, start + width); index++) {
+      const byte = bytes[index]
+      checked++
+      if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) controls++
+    }
+  }
+  return controls >= 8 && controls / checked >= 0.03
+}
 
 export function classify(name) {
   const ext = path.extname(name).toLowerCase()
@@ -91,10 +105,13 @@ export async function convertFile(name, bytes, options = {}, depth = 0) {
   if (source.kind === 'image') return [{ ...source, status: 'needs_ocr', reason: '当前未配置图片 OCR' }]
   if (source.kind === 'dmg') return [{ ...source, status: 'unsupported', reason: 'DMG 暂不只读挂载；不会运行应用' }]
   if (source.kind === 'unsupported') return [{ ...source, status: 'unsupported', reason: '未实现该格式转换' }]
+  if (source.kind === 'text' && looksBinaryText(bytes)) {
+    return [{ ...source, status: 'unsupported', reason: '文本含大量控制字符，疑似二进制或损坏文件；请提供可读原件' }]
+  }
   try {
     const raw = clean(await extract(name, bytes))
     if (!raw) return [{ ...source, status: source.kind === 'pdf' ? 'needs_ocr' : 'unsupported', reason: '未提取到可读正文' }]
-    return [{ ...source, status: 'converted', text: raw, markdown: `# ${path.basename(name)}\n\n${raw}\n`, converterVersion: '0.1.2' }]
+    return [{ ...source, status: 'converted', text: raw, markdown: `# ${path.basename(name)}\n\n${raw}\n`, converterVersion: '0.1.4' }]
   } catch (error) {
     return [{ ...source, status: 'failed', reason: `转换失败：${error.message}`.slice(0, 180) }]
   }
