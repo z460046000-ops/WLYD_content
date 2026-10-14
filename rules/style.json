@@ -1,0 +1,16 @@
+{
+  "id": "customer-readable-style",
+  "version": "0.1.0",
+  "status": "method-only-no-example-facts",
+  "principles": [
+    "标题先说对象和判断，避免只有抽象词",
+    "先写人和业务动作，再解释平台模块与技术术语",
+    "短句优先，但保留必要的条件、因果和适用边界",
+    "同一观点只讲一次；不同章节承担不同任务"
+  ],
+  "optionalCards": [
+    { "id": "handoff-diagnosis", "when": "本次资料明确存在流程交接问题", "action": "写发生环节、信息如何失真、业务影响", "avoid": "无证据时不推断客户存在断点" },
+    { "id": "capability-with-boundary", "when": "本次资料同时给出能力和适用条件", "action": "在讲能力的同一处写清条件和边界", "avoid": "不复用旧稿账号归属、触达频率等具体承诺" }
+  ],
+  "neverRequire": ["固定章数", "固定四字对仗", "强制冒号标题", "禁止所有问号或百分比", "每段套用写法卡"]
+}

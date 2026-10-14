@@ -1,0 +1,14 @@
+{
+  "name": "@wlyd/dsh-material-knowledge-assembly",
+  "version": "0.1.0",
+  "description": "独立 DSH 材料与知识组装插件",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": { ".": "./src/index.js", "./package.json": "./package.json" },
+  "engines": { "node": ">=22" },
+  "files": ["src/", "rules/", "docs/", "README.md", "cordis.patch.yml"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "dependencies": { "exceljs": "^4.4.0", "jszip": "^3.10.2", "mammoth": "^1.13.0", "pdf-parse": "^2.4.5" },
+  "scripts": { "check": "node --check src/index.js && node --check src/convert.js && node --check src/platform.js && node --check src/rules.js && node --check src/workflow.js", "test": "node --test test/*.test.mjs" }
+}

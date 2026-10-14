@@ -1,0 +1,9 @@
+{
+  "roleId": "scenario-solution",
+  "version": "0.1.0",
+  "dependsOnRoles": ["business-challenges", "business-architecture", "product-architecture"],
+  "extractQuestions": ["场景触发条件和使用者是什么", "用户依次做什么、系统做什么、何处需人确认", "输出或业务结果如何被看到", "对应哪个已确认问题"],
+  "write": ["每个场景按问题、做法、参与者动作、结果与边界展开", "场景数量按证据和用户关注点决定", "方案篇幅重点放具体做法，避免重复整章痛点"],
+  "validate": ["场景步骤与产品能力均有来源", "场景价值有机制说明，不自动换算收益数字", "与总体方案关系一致"],
+  "missing": "缺步骤时追问或仅列场景候选，不编操作链路"
+}
