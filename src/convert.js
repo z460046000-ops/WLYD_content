@@ -5,7 +5,7 @@ import mammoth from 'mammoth'
 import ExcelJS from 'exceljs'
 import { PDFParse } from 'pdf-parse'
 
-export const MAX_BYTES = 20 * 1024 * 1024
+export const MAX_BYTES = 500 * 1024 * 1024
 const TEXT = new Set(['.md', '.markdown', '.txt', '.csv', '.json', '.xml', '.yaml', '.yml', '.log', '.html', '.htm'])
 const IMAGE = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg', '.tiff', '.heic'])
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -49,7 +49,6 @@ async function extract(name, bytes) {
     await workbook.xlsx.load(bytes)
     const output = []
     for (const sheet of workbook.worksheets) {
-      if (sheet.rowCount > 10000 || sheet.columnCount > 200) throw new Error('表格超过 10000 行或 200 列')
       const rows = [`## 工作表：${sheet.name}`]
       sheet.eachRow((row, index) => {
         rows.push(`行 ${index}：${row.values.slice(1).map(value => {
@@ -68,18 +67,18 @@ async function extract(name, bytes) {
 /** 每个原件或 ZIP 内文件都独立返回状态；失败不影响同批其他文件。 */
 export async function convertFile(name, bytes, options = {}, depth = 0) {
   const source = { name, kind: classify(name), bytes: bytes.length, sha256: sha256(bytes) }
-  if (bytes.length > MAX_BYTES) return [{ ...source, status: 'failed', reason: '单文件超过 20 MB' }]
+  if (bytes.length > MAX_BYTES) return [{ ...source, status: 'failed', reason: '单文件超过 500 MB' }]
   if (source.kind === 'zip') {
     if (depth >= 2) return [{ ...source, status: 'failed', reason: 'ZIP 嵌套超过两层' }]
     try {
       const zip = await JSZip.loadAsync(bytes)
       const entries = Object.values(zip.files).filter(item => !item.dir && !item.name.startsWith('__MACOSX/'))
-      if (entries.length > 100) return [{ ...source, status: 'failed', reason: 'ZIP 条目超过 100' }]
+      if (entries.length > 1000) return [{ ...source, status: 'failed', reason: 'ZIP 条目超过 1000' }]
       let total = 0
       const output = []
       for (const entry of entries) {
         const size = entry._data?.uncompressedSize
-        if (!Number.isSafeInteger(size) || size > MAX_BYTES || total + size > 50 * 1024 * 1024) {
+        if (!Number.isSafeInteger(size) || size > MAX_BYTES || total + size > 2 * MAX_BYTES) {
           output.push({ name: `${name}!${entry.name}`, kind: classify(entry.name), status: 'failed', reason: 'ZIP 展开超限' })
           continue
         }
@@ -95,8 +94,7 @@ export async function convertFile(name, bytes, options = {}, depth = 0) {
   try {
     const raw = clean(await extract(name, bytes))
     if (!raw) return [{ ...source, status: source.kind === 'pdf' ? 'needs_ocr' : 'unsupported', reason: '未提取到可读正文' }]
-    if (raw.length > 200000) return [{ ...source, status: 'failed', reason: '提取正文超过 20 万字符，请拆分材料' }]
-    return [{ ...source, status: 'converted', text: raw, markdown: `# ${path.basename(name)}\n\n${raw}\n`, converterVersion: '0.1.0' }]
+    return [{ ...source, status: 'converted', text: raw, markdown: `# ${path.basename(name)}\n\n${raw}\n`, converterVersion: '0.1.2' }]
   } catch (error) {
     return [{ ...source, status: 'failed', reason: `转换失败：${error.message}`.slice(0, 180) }]
   }

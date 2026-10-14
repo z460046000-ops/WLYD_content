@@ -21,7 +21,7 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register({
     name: 'wlyd_assembly_ingest',
-    description: '读取 1—10 个工作区文件或当前会话用户附件，逐文件转为 Markdown；唯一授权项目和绑定知识库时默认上传。多目标先返回候选，不自动选择。',
+    description: '读取最多 100 个工作区文件或当前会话用户附件，逐文件转为 Markdown；唯一授权项目和绑定知识库时默认上传。多目标先返回候选，不自动选择。',
     parameters: {
       files: { type: 'array', items: { type: 'string' }, description: '工作区内材料路径' },
       attachment_refs: { type: 'array', items: { type: 'object', properties: {

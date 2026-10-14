@@ -1,9 +1,9 @@
-import { readFileSync } from 'node:fs'
+import { openAsBlob, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 
 const id = value => encodeURIComponent(String(value))
-const signalFor = signal => AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(60000)])
+const signalFor = (signal, timeoutMs = 60000) => AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(timeoutMs)])
 
 export function resolveConfig(config = {}, env = process.env) {
   let local = {}
@@ -44,7 +44,8 @@ export class PlatformClient {
     const send = () => this.fetch(this.config.baseUrl + route, {
       method, headers: { Authorization: `Bearer ${this.token}`, 'X-Tenant-ID': this.config.tenantId,
         ...(!multipart && body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
-      body: body === undefined ? undefined : multipart ? body : JSON.stringify(body), signal: signalFor(signal),
+      body: body === undefined ? undefined : multipart ? body : JSON.stringify(body),
+      signal: signalFor(signal, multipart ? 30 * 60 * 1000 : 60000),
     })
     let response = await send()
     if (response.status === 401) { this.token = ''; await this.login(signal); response = await send() }
@@ -85,16 +86,16 @@ export class PlatformClient {
     const visibleIds = new Set(visible.map(base => String(base.id)))
     return [...new Set(bound.map(base => String(base.knowledge_base_id ?? base.id)).filter(baseId => visibleIds.has(baseId)))]
   }
-  async upload(projectId, baseId, name, markdown, signal) {
+  async upload(projectId, baseId, name, markdownPath, signal) {
     const form = new FormData()
-    form.append('file', new Blob([markdown], { type: 'text/markdown; charset=utf-8' }), name)
+    form.append('file', await openAsBlob(markdownPath, { type: 'text/markdown; charset=utf-8' }), name)
     const route = `/api/v1/solutions/projects/${id(projectId)}/knowledge-bases/${id(baseId)}/files`
     return this.request('POST', route, form, signal, true)
   }
   async knowledge(idValue, signal) { return (await this.request('GET', `/api/v1/knowledge/${id(idValue)}`, undefined, signal)).data }
   async search(baseId, query, documentIds, signal) {
     return (await this.request('POST', `/api/v1/knowledge-bases/${id(baseId)}/hybrid-search`, {
-      query_text: query, match_count: 6, knowledge_ids: documentIds, skip_context_enrichment: true,
+      query_text: query, match_count: 50, knowledge_ids: documentIds, skip_context_enrichment: true,
     }, signal)).data
   }
 }

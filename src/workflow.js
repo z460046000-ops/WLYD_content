@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { convertFile } from './convert.js'
+import { convertFile, MAX_BYTES } from './convert.js'
 import { loadRules, validateOutline } from './rules.js'
 
 const sha256 = value => createHash('sha256').update(value).digest('hex')
@@ -14,25 +14,27 @@ const runPath = (agent, runId) => {
 const safeName = name => path.basename(String(name)).replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 100) || 'material'
 const deepClone = value => JSON.parse(JSON.stringify(value))
 const reportText = report => [`# ${report.title}`, '', ...report.sections.flatMap(section => [
-  `## ${section.title}`, '', ...section.blocks.flatMap(block => [block.text, '', `依据：${block.evidence.map(item => `[${item.id}]`).join('、')}`, '']),
-]), ...(report.gaps.length ? ['## 待补充或人工确认', '', ...report.gaps.map(item => `- ${item}`)] : [])].join('\n')
+  `## ${section.title}`, '', ...section.blocks.flatMap(block => [block.text, '',
+    ...(block.evidence.length ? [`依据：${block.evidence.map(item => `[${item.id}]`).join('、')}`, ''] : [])]),
+]), ...(report.reviewItems.length ? ['## 待核对的组稿关系', '', ...report.reviewItems.map(item => `- ${item}`), ''] : []),
+  ...(report.gaps.length ? ['## 待补充或人工确认', '', ...report.gaps.map(item => `- ${item}`)] : [])].join('\n')
 
-async function readInputs(ctx, exec, args) {
+async function* readInputs(ctx, exec, args) {
   const paths = Array.isArray(args.files) ? args.files : []
   const refs = Array.isArray(args.attachment_refs) ? args.attachment_refs : []
   if (!paths.length && !refs.length) throw new Error('请提供文件路径或本次会话附件')
-  if (paths.length + refs.length > 10) throw new Error('每批最多 10 个文件')
+  if (paths.length + refs.length > 100) throw new Error('每批最多 100 个文件')
   const cwd = exec.agent?.session?.header?.cwd || process.cwd()
-  const inputs = []
   for (const file of paths) {
     const name = safeName(file)
     try {
       const target = await ctx.fs.resolve(String(file), { cwd, signal: exec.signal })
       const stat = await ctx.fs.stat(target, exec.signal)
       if (stat?.type !== 'file') throw new Error('不是普通文件')
-      if (stat.size > 20 * 1024 * 1024) throw new Error('超过 20 MB')
-      inputs.push({ name, bytes: Buffer.from(await ctx.fs.readBytes(target, exec.signal, 20 * 1024 * 1024)), source: String(file) })
-    } catch (error) { inputs.push({ name, source: String(file), error: error.message }) }
+      if (stat.size > MAX_BYTES) throw new Error('超过 500 MB')
+      const bytes = await ctx.fs.readBytes(target, exec.signal, MAX_BYTES)
+      yield { name, bytes: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), source: String(file) }
+    } catch (error) { yield { name, source: String(file), error: error.message } }
   }
   if (refs.length) {
     const history = exec.agent?.session?.deriveMessages?.() ?? []
@@ -50,14 +52,13 @@ async function readInputs(ctx, exec, args) {
         let size = 0
         for await (const chunk of store.readFileStream(ref, exec.signal)) {
           size += chunk.length
-          if (size > 20 * 1024 * 1024) throw new Error('超过 20 MB')
+          if (size > MAX_BYTES) throw new Error('超过 500 MB')
           chunks.push(Buffer.from(chunk))
         }
-        inputs.push({ name, bytes: Buffer.concat(chunks), source: `attachment:${ref.attachmentId}` })
-      } catch (error) { inputs.push({ name, source: 'attachment', error: error.message }) }
+        yield { name, bytes: Buffer.concat(chunks, size), source: `attachment:${ref.attachmentId}` }
+      } catch (error) { yield { name, source: 'attachment', error: error.message } }
     }
   }
-  return inputs
 }
 
 /** 可信身份只从会话结构取；不接受调用参数传来的用户 ID。 */
@@ -74,9 +75,8 @@ export async function ingest({ ctx, client, args, exec }) {
     projectId: null, knowledgeBaseId: null, files: [] }
   await writeJson(path.join(dir, 'run.json'), state)
   try {
-    const inputs = await readInputs(ctx, exec, args)
     let index = 0
-    for (const input of inputs) {
+    for await (const input of readInputs(ctx, exec, args)) {
       if (input.error) { state.files.push({ name: input.name, source: input.source, status: 'failed', reason: input.error }); continue }
       const converted = await convertFile(input.name, input.bytes)
       for (const item of converted) {
@@ -118,8 +118,8 @@ export async function ingest({ ctx, client, args, exec }) {
     state.knowledgeBaseId = baseId
     for (const file of converted) {
       try {
-        const markdown = await readFile(path.join(dir, file.materialPath), 'utf8')
-        const response = await client.upload(state.projectId, baseId, safeName(file.name) + '.md', markdown, exec.signal)
+        const response = await client.upload(state.projectId, baseId, safeName(file.name) + '.md',
+          path.join(dir, file.materialPath), exec.signal)
         if (!response.data?.id) throw new Error('上传响应缺少知识文档 ID')
         file.knowledgeId = String(response.data.id)
         file.uploadStatus = String(response.data.parse_status || 'pending')
@@ -159,7 +159,7 @@ function localEvidence(text, file) {
     } else current += (current ? '\n\n' : '') + piece
   }
   if (current) result.push(current)
-  return result.slice(0, 12).map((content, index) => ({ id: `M${file.index}-${index + 1}`,
+  return result.map((content, index) => ({ id: `M${file.index}-${index + 1}`,
     kind: 'material', source: file.name, sourceSha256: file.sha256, locator: `${file.materialPath}#${index + 1}`, content }))
 }
 
@@ -167,8 +167,14 @@ async function retrieve(client, projectId, rules, signal) {
   const bases = await client.visibleProjectBases(projectId, signal)
   const evidence = []
   const coverage = []
-  const questions = [...new Set(Object.values(rules.chapters).flatMap(rule => rule.extractQuestions.slice(0, 1)))].slice(0, 8)
-  for (const baseId of bases.slice(0, 4)) {
+  const priority = ['product-architecture', 'scenario-solution', 'business-challenges', 'policy-trends']
+  const ordered = [...priority.map(role => rules.chapters[role]).filter(Boolean), ...Object.values(rules.chapters)]
+  const questions = [...new Set([
+    '本项目材料的主要内容、产品能力、业务场景、客户问题与行业背景',
+    '还有哪些值得纳入方案的事实、限制条件、案例、服务和企业信息',
+    ...ordered.flatMap(rule => rule.extractQuestions.slice(0, 1)),
+  ])]
+  for (const baseId of bases) {
     const docs = await client.documents(baseId, signal)
     const completed = docs.filter(doc => doc.parse_status === 'completed').map(doc => String(doc.id))
     if (!completed.length) { coverage.push({ baseId, status: 'no_completed_documents' }); continue }
@@ -181,17 +187,14 @@ async function retrieve(client, projectId, rules, signal) {
         const knowledgeId = String(row.knowledge_id ?? '')
         const content = String(row.content ?? row.matched_content ?? '').trim()
         const key = `${baseId}:${chunkId}`
-        if (!chunkId || !completed.includes(knowledgeId) || content.length < 8 || seen.has(key)) continue
+        if (!chunkId || !completed.includes(knowledgeId) || !content || seen.has(key)) continue
         seen.add(key)
         evidence.push({ id: `K${evidence.length + 1}`, kind: 'knowledge', knowledgeBaseId: baseId,
           knowledgeId, chunkId, source: String(row.knowledge_title || row.knowledge_filename || knowledgeId),
-          locator: `chunk=${chunkId}${row.chunk_index != null ? `;index=${row.chunk_index}` : ''}`, content: content.slice(0, 1800) })
-        if (evidence.length >= 24) break
+          locator: `chunk=${chunkId}${row.chunk_index != null ? `;index=${row.chunk_index}` : ''}`, content })
       }
-      if (evidence.length >= 24) break
     }
     coverage.push({ baseId, status: seen.size ? 'matched' : 'empty', hits: seen.size })
-    if (evidence.length >= 24) break
   }
   return { evidence, coverage, bases }
 }
@@ -224,11 +227,17 @@ export function validateDraft(draft, evidence, outline) {
   for (const item of Array.isArray(draft?.sections) ? draft.sections : []) {
     if (!allowed.has(item.key) || !Array.isArray(item.blocks)) { issues.push('模型返回目录外章节'); continue }
     const blocks = []
-    for (const block of item.blocks) {
+    for (const [index, block] of item.blocks.entries()) {
       const refs = Array.isArray(block.evidence) ? block.evidence : []
       const text = String(block.text ?? '').trim()
-      if (text.length < 8 || text.length > 1500 || !refs.length) { issues.push(`${item.key} 有无正文或无来源段落`); continue }
-      const checked = refs.slice(0, 4).map(ref => {
+      const candidate = block.supportMode === 'candidate'
+      if (text.length < 8 || (!refs.length && !candidate)) {
+        issues.push(`${item.key} 有无正文或无来源段落`); continue
+      }
+      if (candidate && /(?:本产品|我司|客户)(?:已|现已|已经)|已实现|已上线|已交付|已获得|保证|承诺/iu.test(text)) {
+        issues.push(`${item.key} 的待确认内容写成了已发生事实`); continue
+      }
+      const checked = refs.map(ref => {
         const source = sources.get(String(ref.id))
         const quote = String(ref.quote ?? '').trim()
         return source && quote.length >= 6 && source.content.includes(quote) ? { id: source.id, quote } : null
@@ -238,12 +247,38 @@ export function validateDraft(draft, evidence, outline) {
       if (numbers.some(number => !checked.some(ref => ref.quote.includes(number)))) {
         issues.push(`${item.key} 含引文未支持的数字`); continue
       }
-      blocks.push({ text, evidence: checked })
+      blocks.push({ id: `${item.key}-${index + 1}`,
+        text: candidate && !text.startsWith('【待确认') ? `【待确认·典型场景假设】${text}` : text,
+        supportMode: candidate ? 'candidate' : 'sourced', evidence: checked })
     }
     if (blocks.length) sections.push({ key: item.key, title: String(item.title || item.key).slice(0, 100), blocks })
   }
   if (!sections.length) throw new Error(`模型没有生成有据正文：${issues.join('；')}`)
-  return { sections, issues }
+  const blockIds = new Set(sections.flatMap(section => section.blocks.map(block => block.id)))
+  const assemblyLinks = []
+  const reviewItems = []
+  for (const link of Array.isArray(draft?.assemblyLinks) ? draft.assemblyLinks : []) {
+    if (!link || typeof link !== 'object') { reviewItems.push('有一条组稿关系格式不正确，已略过该关系'); continue }
+    const source = sources.get(String(link.capabilityEvidenceId ?? ''))
+    const quote = String(link.capabilityQuote ?? '').trim()
+    const scenarioBlockId = String(link.scenarioBlockId ?? '')
+    const challengeBlockId = String(link.challengeBlockId ?? '')
+    const trendBlockId = String(link.trendBlockId ?? '')
+    if (!source || quote.length < 6 || !source.content.includes(quote) || !blockIds.has(scenarioBlockId) ||
+      (challengeBlockId && !blockIds.has(challengeBlockId)) || (trendBlockId && !blockIds.has(trendBlockId))) {
+      reviewItems.push('有一条组稿关系无法定位到证据或正文，已略过该关系')
+      continue
+    }
+    assemblyLinks.push({ capabilityEvidenceId: source.id, capabilityQuote: quote,
+      scenarioBlockId, ...(challengeBlockId ? { challengeBlockId } : {}),
+      ...(trendBlockId ? { trendBlockId } : {}), relationReason: String(link.relationReason ?? '').slice(0, 300),
+      status: 'proposed' })
+  }
+  if (!assemblyLinks.length) reviewItems.push('产品能力、场景、问题和趋势的对应关系尚待人工核对')
+  if (sections.some(section => section.blocks.some(block => block.supportMode === 'candidate'))) {
+    reviewItems.push('正文含待确认的典型场景假设，请核对后再作为客户事实使用')
+  }
+  return { sections, issues, assemblyLinks, reviewItems: [...new Set(reviewItems)] }
 }
 
 export async function assemble({ client, llm, args, exec }) {
@@ -284,7 +319,7 @@ export async function assemble({ client, llm, args, exec }) {
     if (!evidence.length) throw new Error('没有可核对的材料或授权知识片段，未生成空稿')
     await writeJson(path.join(dir, 'evidence.json'), { evidence, coverage: retrieval.coverage, gaps })
     state.status = 'generating'; await writeJson(path.join(dir, 'run.json'), state)
-    const prompt = JSON.stringify({ task: '按目录生成可读售前报告。逐段输出文字与证据 ID、6 字以上原文短引。证据不足的章节放 gaps，不凑段落。JSON 结构：{title,sections:[{key,title,blocks:[{text,evidence:[{id,quote}]}]}],gaps:[string]}。',
+    const prompt = JSON.stringify({ task: '按目录生成可读方案。extractQuestions 只是重点线索，不是筛选条件；检查全部给出的材料和检索片段，保留其他相关事实与约束。先从有据产品能力反推可落地场景，再匹配客户问题和相关趋势，最后按目录展示。优先检索证据；关系不足时保留合适的典型场景假设或建设方向，使用条件语气并标 supportMode=candidate，不写进 gaps，不冒充客户已发生事实、已实现功能或正式政策。事实段标 supportMode=sourced，逐段给证据 ID 和 6 字以上原文短引；候选段可无引文，但不得含未经来源支持的数字。输出 assemblyLinks 记录建议关系，block ID 固定为章节 key 加横线和段落序号；默认目录的典型场景第一段为 scenarios-1。仅真正缺失的事实或不可读资料放 gaps。JSON 结构：{title,sections:[{key,title,blocks:[{text,supportMode,evidence:[{id,quote}]}]}],assemblyLinks:[{capabilityEvidenceId,capabilityQuote,scenarioBlockId,challengeBlockId,trendBlockId,relationReason}],gaps:[string]}。',
       audience: args.audience || '首次接触方案的企业客户', outline, globalRules: rules.global,
       styleRules: rules.style, chapterRules: rules.chapters, evidence: evidence.map(item => ({ id: item.id, content: item.content })) })
     const draft = await askModel(llm, exec.agent, exec.signal, prompt)
@@ -298,7 +333,8 @@ export async function assemble({ client, llm, args, exec }) {
       .map(item => `${item.title}：缺少足够资料，需补充或确认`)
     const report = { schemaVersion: 1, runId: outputId, title,
       templateId: rules.template.id, outline, sections: checked.sections,
-      gaps: [...new Set([...gaps, ...requiredGaps, ...(Array.isArray(draft.gaps) ? draft.gaps.filter(item => typeof item === 'string').slice(0, 20) : []), ...checked.issues])],
+      assemblyLinks: checked.assemblyLinks, reviewItems: checked.reviewItems,
+      gaps: [...new Set([...gaps, ...requiredGaps, ...(Array.isArray(draft.gaps) ? draft.gaps.filter(item => typeof item === 'string') : []), ...checked.issues])],
       evidenceIds: evidence.map(item => item.id), ruleFingerprint: rules.fingerprint, loadedRules: rules.loaded,
       reviewStatus: 'needs_human_review', generatedAt: new Date().toISOString() }
     await writeJson(path.join(dir, 'report.json'), report)
