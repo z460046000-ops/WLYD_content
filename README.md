@@ -14,7 +14,7 @@
 | Cordis 组件 ID | `wlyd-material-knowledge-assembly` |
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 官方工具前缀 | `wlyd_assembly_` |
-| 当前发布包 | `releases/wlyd-dsh-material-knowledge-assembly-0.2.2.tgz` |
+| 当前发布包 | `releases/wlyd-dsh-material-knowledge-assembly-0.2.3.tgz` |
 | 发布包校验清单 | [releases/SHA256SUMS](releases/SHA256SUMS) |
 | 本机 DSH 安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
 | 运行产物 | **当前 DSH 会话工作区**下的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
@@ -59,7 +59,7 @@ flowchart TD
 | 规则层 | 加载模板和章节角色，校验目录，保存实际规则版本及哈希 | `src/rules.js`、`rules/` |
 | 章节生成 | 共享关联计划、逐章取材写作、合稿复核 | `src/generation.js` |
 | 全景补充 | 依据后文重点场景，单轮按需追加并保存原稿 | `src/panorama.js` |
-| 模型与调度 | 八路额度、取消、模型路由和思考强度；每阶段限时 | `src/scheduler.js`、`src/model.js` |
+| 模型与调度 | 默认八路、可配置额度、取消、模型路由和思考强度；每阶段限时 | `src/scheduler.js`、`src/model.js` |
 | 内容检查 | 逐字引文、数字、章节与关系定位；Markdown 输出 | `src/content.js` |
 | 产物层 | 保存输入材料、证据、待审正文、规则指纹及运行结果 | 会话工作区的 `artifacts/` |
 
@@ -98,6 +98,8 @@ rules/
 | `dependsOnRoles` | 章节的语义依赖说明 | 语义依赖由共享关联计划协调；当前不按此字段拓扑排序 |
 
 规则读取自**已安装插件包**内的 `rules/`。修改本仓库规则后须发布并重新安装；目前没有平台在线规则编辑器，也没有自动把用户对话写回规则文件的功能。
+
+共用写作规则现要求：正文尽量用简短小标题或短语概括论点，再用短句解释；从大段材料取材时先概括，不直接堆砌原文。事实、因果、条件和边界仍需写清，逐字引文仍需能在原始证据中定位。这是写法偏好，不强制每段套格式，也不裁剪送入模型的原始材料。
 
 规则来自完整 goodcase 的组织方法归纳，取样依据见 [docs/mvp-rule-evidence.md](docs/mvp-rule-evidence.md)。这是可审查的 MVP 规则配置，尚不是模型微调。goodcase 中的客户、能力、数字、奖项和承诺不会作为新报告的事实来源。
 
@@ -155,15 +157,19 @@ DSH 对话中的 Agent 按用户指令调用工具；插件没有独立后台任
 2. `outline`：加载模板并预览默认或修改后的目录。
 3. `ingest`：读取文件/会话附件，逐文件转换；目标唯一时同步，否则返回选择项。
 4. `status`：按需查询后台文档状态，包括 `finalizing`；没有后台自动轮询。
-5. `generate`：收集证据→共享关联规划→**最多八条逐章提取、撰写、校验流水线**→按目录合稿→单轮按需补充全景→一致性复核→待人工确认。
+5. `generate`：收集证据→共享关联规划→**默认最多八条逐章提取、撰写、校验流水线**→按目录合稿→单轮按需补充全景→一致性复核→待人工确认。
 
-检索请求另有最多四路额度；局部检索失败保留成功片段并记录覆盖。章节提取和撰写共用八个在途模型请求名额，同一进程中的多个生成运行也共享，不能叠成十六路。单章提取/撰写各最多尝试两次，失败后其他章节继续，所有阶段文件独立保存。取消时停止启动排队章，并向活动请求传递取消信号。
+检索请求另有最多四路额度；局部检索失败保留成功片段并记录覆盖。章节提取和撰写共用默认八个在途模型请求名额，同一进程中的多个生成运行也共享，不能叠加各次运行的额度。单章提取/撰写各最多尝试两次，失败后其他章节继续，所有阶段文件独立保存。取消时停止启动排队章，并向活动请求传递取消信号。
+
+生成并发默认 8，可用进程环境变量或 `$DSH_HOME/.env` 的 `WLYD_ASSEMBLY_CONCURRENCY` 设置为 1–12；进程环境变量优先，非法值回退 8，改动后须重启 DSH。该设置同时作用于章节任务和共享模型请求，不改变检索四路额度。真实网关在不同并发下的耗时仍需复测。
 
 本次材料的可读正文全部保留，按段送入模型；知识库先宽泛检索，再按章节查询，去重后保留命中正文。`extractQuestions` 只提供重点。插件不压缩 token 上下文，DSH 与模型服务仍有各自限制。每次模型请求最多等待 10 分钟（含排队）；会话的模型与 reasoningEffort 原样透传，由 DSH 校验支持性。run.json 记录每次请求阶段、输入字符规模、证据数、耗时边界与错误；字符数不等于 token 数。识别到上下文超限时不重复同一请求、不偷偷裁剪，返回阶段和输入规模，仍受平台真实上下文限制。
 
+模型返回 JSON 时，仅尝试修复字符串内控制字符和结构性的尾随逗号；截断或其他无法确认的输出仍报错并按原流程处理。生成工具只返回 runId、章节/证据数量、失败章节、审核项数量和报告路径；完整进度保存在 run.json，可用 status 查询。
+
 ### 后续调度设计（尚未实现）
 
-下一步按 [后续待办](docs/backlog.md) 校准内容质量、接入统一多来源检索，再做逐章对话修改与版本恢复。共享规划、八路逐章生成和合稿复核已实现；确认后的呈现适配器仍待后续。
+下一步按 [后续待办](docs/backlog.md) 校准内容质量、接入统一多来源检索，再做逐章对话修改与版本恢复。共享规划、默认八路逐章生成和合稿复核已实现；确认后的呈现适配器仍待后续。
 
 单章任务应保存输入版本、规则指纹、证据和结果；用户扩写、缩写或重写某章时，只重算该章及受影响章节。`dependsOnRoles` 可用于依赖调度，但共享的能力与问题关系需要先固定版本，防止章节并行生成后相互矛盾。
 
@@ -189,7 +195,7 @@ DSH 对话中的 Agent 按用户指令调用工具；插件没有独立后台任
 
 ```bash
 # 安装到指定 DSH profile；请将路径换成下载包的绝对路径
-dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.2.2.tgz
+dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.2.3.tgz
 
 dsh --profile web --dump-config
 ```

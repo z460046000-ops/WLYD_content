@@ -8,7 +8,33 @@ import { apply } from '../src/index.js'
 import { parametersSchema } from '../src/schema.js'
 import { retrieve, status } from '../src/workflow.js'
 import { loadRules } from '../src/rules.js'
-import { askModel } from '../src/model.js'
+import { askModel, parseModelJson } from '../src/model.js'
+import { resolveGenerationConcurrency } from '../src/scheduler.js'
+
+test('生成并发默认八路，可由进程环境或 DSH .env 配置，非法值回退默认', async () => {
+  const dshHome = await mkdtemp(path.join(os.tmpdir(), 'wlyd-concurrency-'))
+  assert.equal(resolveGenerationConcurrency({ DSH_HOME: dshHome }), 8)
+  await writeFile(path.join(dshHome, '.env'), 'WLYD_ASSEMBLY_CONCURRENCY=6\n')
+  assert.equal(resolveGenerationConcurrency({ DSH_HOME: dshHome }), 6)
+  assert.equal(resolveGenerationConcurrency({ DSH_HOME: dshHome, WLYD_ASSEMBLY_CONCURRENCY: '10' }), 10)
+  for (const value of ['0', '13', '8x', '08', '']) {
+    assert.equal(resolveGenerationConcurrency({ DSH_HOME: dshHome, WLYD_ASSEMBLY_CONCURRENCY: value }), 8)
+  }
+})
+
+test('模型 JSON 仅修复字符串控制字符和结构性尾随逗号，保留引文原意', async () => {
+  const broken = '{"quote":"前段,}后段\n下一行\t补充","values":[1,2,],}'
+  const expected = { quote: '前段,}后段\n下一行\t补充', values: [1, 2] }
+  assert.deepEqual(parseModelJson(broken), expected)
+  assert.deepEqual(parseModelJson(JSON.stringify(expected)), expected)
+  assert.deepEqual(parseModelJson('```json\n{"value":1}\n```'), { value: 1 })
+  assert.throws(() => parseModelJson('{"quote":"未结束'), SyntaxError)
+  const llm = { async *stream() {
+    yield { type: 'text-delta', text: broken }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } }
+  assert.deepEqual(await askModel(llm, { options: { provider: 'fake', model: 'fake' } }, undefined, { stage: 'write' }), expected)
+})
 
 test('五个官方工具均注册标准对象 schema，保留 required，且不改共享注册服务', async () => {
   const tools = []

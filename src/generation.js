@@ -157,16 +157,18 @@ function linksFromPlan(plan, sections, outline) {
   return links
 }
 
-const writingContract = '只写当前章节，标题与 key 使用目录给定值。事实逐段 supportMode=sourced，附原文 evidence:[{id,quote}]；引文逐字复制至少六字，含数字的正文须在引文中支持相同数字。合理推演用条件语气并标 supportMode=candidate，不能冒充客户事实、已具备能力、正式政策或效果承诺。保留所有有价值的相关材料，extractQuestions 只是重点。业务章采用所选一种写法，趋势章只用所选一种框架。对外读者不能把厂商内部研发问题、经营判断当客户痛点。问题与方案以共享规划 ID 对应；每个段落给 planRefs:{capabilityIds,scenarioIds,problemIds,trendIds}。只有真正缺失的事实进入 gaps；关系不足在 reviewItems 中说明，正文可保留待确认候选。'
+const writingContract = '只写当前章节，标题与 key 使用目录给定值。事实逐段 supportMode=sourced，附原文 evidence:[{id,quote}]；引文逐字复制至少六字，含数字的正文须在引文中支持相同数字。合理推演用条件语气并标 supportMode=candidate，不能冒充客户事实、已具备能力、正式政策或效果承诺。保留所有有价值的相关材料，extractQuestions 只是重点。大段原文先概括关键意思，再用简短小标题或短语引出论点，并以短句解释动作、因果、条件和边界；不得把长原文直接堆入正文，也不能为短语化丢掉事实与引文。业务章采用所选一种写法，趋势章只用所选一种框架。对外读者不能把厂商内部研发问题、经营判断当客户痛点。问题与方案以共享规划 ID 对应；每个段落给 planRefs:{capabilityIds,scenarioIds,problemIds,trendIds}。只有真正缺失的事实进入 gaps；关系不足在 reviewItems 中说明，正文可保留待确认候选。'
 
 export async function generateChapters({ llm, exec, args, rules, outline, evidence, dir, state, saveState }) {
   state.modelRequests = []
   const request = async prompt => {
-    const record = { stage: prompt.stage, chapterKey: prompt.chapter?.key,
+    const record = { stage: prompt.stage, ...(prompt.chapter?.key ? { chapterKey: prompt.chapter.key } : {}),
       inputCharacters: JSON.stringify(prompt).length, evidenceCount: evidence.length,
       evidenceCharacters: evidence.reduce((n, item) => n + item.content.length, 0),
-      provider: exec.agent?.options?.provider, model: exec.agent?.options?.model,
-      reasoningEffort: exec.agent?.options?.reasoningEffort, startedAt: new Date().toISOString(), status: 'pending' }
+      ...(exec.agent?.options?.provider ? { provider: exec.agent.options.provider } : {}),
+      ...(exec.agent?.options?.model ? { model: exec.agent.options.model } : {}),
+      ...(exec.agent?.options?.reasoningEffort === undefined ? {} : { reasoningEffort: exec.agent.options.reasoningEffort }),
+      startedAt: new Date().toISOString(), status: 'pending' }
     state.modelRequests.push(record); await saveState()
     try {
       const result = await askModel(llm, exec.agent, exec.signal, prompt)

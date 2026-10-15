@@ -1,4 +1,18 @@
-export const GENERATION_CONCURRENCY = 8
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import path from 'node:path'
+
+export function resolveGenerationConcurrency(env = process.env) {
+  let local
+  try {
+    const file = readFileSync(path.join(env.DSH_HOME || path.join(homedir(), '.dsh'), '.env'), 'utf8')
+    local = /^\s*WLYD_ASSEMBLY_CONCURRENCY\s*=\s*(.*?)\s*$/mu.exec(file)?.[1]?.replace(/^["']|["']$/gu, '')
+  } catch { /* 允许不提供本地配置。 */ }
+  const raw = String(env.WLYD_ASSEMBLY_CONCURRENCY ?? local ?? '').trim()
+  return /^(?:[1-9]|1[0-2])$/u.test(raw) ? Number(raw) : 8
+}
+
+export const GENERATION_CONCURRENCY = resolveGenerationConcurrency()
 
 export const abortError = signal => signal?.reason || new DOMException('任务已取消', 'AbortError')
 

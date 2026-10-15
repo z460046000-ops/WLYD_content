@@ -309,7 +309,10 @@ export async function assemble({ client, llm, args, exec }) {
     await writeFile(path.join(dir, 'report.md'), reportText(report), { mode: 0o600 })
     state.status = 'needs_human_review'; state.sections = report.sections.length; state.evidence = evidence.length
     await saveState()
-    return { ...state, reportPath: path.join(dir, 'report.md'), jsonPath: path.join(dir, 'report.json'), evidencePath: path.join(dir, 'evidence.json') }
+    return { runId: outputId, status: state.status, sections: report.sections.length, evidence: evidence.length,
+      choices: report.choices, failedChapters: state.chapters.filter(item => item.status === 'failed').map(item => item.title),
+      reviewItemsCount: report.reviewItems.length, gapsCount: report.gaps.length,
+      reportPath: path.join(dir, 'report.md'), jsonPath: path.join(dir, 'report.json'), evidencePath: path.join(dir, 'evidence.json') }
   } catch (error) { state.status = exec.signal?.aborted ? 'cancelled' : 'failed'; state.error = error.message; throw error }
   finally { await saveState() }
 }

@@ -66,7 +66,7 @@ export function apply(ctx, config = {}) {
 
   register({
     name: 'wlyd_assembly_generate',
-    description: '先制定全篇关联计划，再最多八路并行逐章提取、撰写与校验，合稿后最多一轮按需补充两类全景，再复核有据售前报告。全景维度按读者、问题和重点场景自选。业务现状/需求挑战、PEST/管理业务技术各二选一。自定义目录须先确认。保留 plan.json、逐章原稿及补充记录；部分失败不丢失其他结果。',
+    description: '先制定全篇关联计划，再按默认八路（可配置）并行逐章提取、撰写与校验，合稿后最多一轮按需补充两类全景，再复核有据售前报告。全景维度按读者、问题和重点场景自选。业务现状/需求挑战、PEST/管理业务技术各二选一。自定义目录须先确认。保留 plan.json、逐章原稿及补充记录；部分失败不丢失其他结果。',
     parameters: {
       source_run_id: { type: 'string', description: '材料导入返回的 runId' },
       project_id: { type: 'string', description: '可访问的方案项目 ID' },

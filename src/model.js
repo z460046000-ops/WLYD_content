@@ -3,6 +3,39 @@ import { createLimiter, abortError } from './scheduler.js'
 
 const modelSlot = createLimiter()
 
+function repairJsonText(input) {
+  let result = ''
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < input.length; index++) {
+    const char = input[index]
+    if (inString) {
+      if (escaped) { result += char; escaped = false; continue }
+      if (char === '\\') { result += char; escaped = true; continue }
+      if (char === '"') { result += char; inString = false; continue }
+      const code = char.charCodeAt(0)
+      result += code < 32 ? code === 10 ? '\\n' : code === 13 ? '\\r' : code === 9 ? '\\t'
+        : `\\u${code.toString(16).padStart(4, '0')}` : char
+      continue
+    }
+    if (char === '"') { result += char; inString = true; continue }
+    if (char === ',') {
+      let next = index + 1
+      while (/\s/u.test(input[next] || '')) next++
+      if (input[next] === '}' || input[next] === ']') continue
+    }
+    result += char
+  }
+  return result
+}
+
+export function parseModelJson(text) {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '')
+  try { return JSON.parse(cleaned) } catch (error) {
+    try { return JSON.parse(repairJsonText(cleaned)) } catch { throw error }
+  }
+}
+
 export async function askModel(llm, agent, signal, prompt) {
   if (!llm?.stream || !agent?.options?.provider || !agent?.options?.model) throw new Error('DSH 模型服务不可用')
   const requestSignal = AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(600000)])
@@ -29,7 +62,7 @@ export async function askModel(llm, agent, signal, prompt) {
       if (finishFailure?.code) error.code = finishFailure.code
       throw error
     }
-    const value = JSON.parse((text || blockText).trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, ''))
+    const value = parseModelJson(text || blockText)
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('模型未返回 JSON 对象')
     return value
   }, requestSignal) } catch (error) {
