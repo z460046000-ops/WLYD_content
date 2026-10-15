@@ -72,7 +72,7 @@ test('五个官方工具均注册标准对象 schema，保留 required，且不�
   assert.equal(source.properties.rows.required, true)
 })
 
-test('跨库检索最多四路，局部失败保留成功片段，按请求顺序去重且不跨文档混用', async () => {
+test('跨库检索最多四路，局部失败保留成功片段，来源 ID 稳定且不跨文档混用', async () => {
   let active = 0, peak = 0
   const client = { visibleProjectBases: async () => ['B1', 'B2'], documents: async () => [{ id: 'D1', parse_status: 'completed' }],
     search: async (base, query, documents) => {
@@ -80,7 +80,7 @@ test('跨库检索最多四路，局部失败保留成功片段，按请求顺�
       active++; peak = Math.max(peak, active)
       try {
         await delay(base === 'B1' ? 4 : 1)
-        if (base === 'B1' && query.startsWith('还有哪些')) throw new Error('one query failed')
+        if (base === 'B1' && query.includes('行业趋势')) throw new Error('one query failed')
         return [{ chunk_id: 'same-id', knowledge_id: 'D1', content: '可用于产品方案的真实材料原文。' },
           { chunk_id: 'foreign', knowledge_id: 'D2', content: '不应使用未授权的文档。' }]
       } finally { active-- }
@@ -88,7 +88,10 @@ test('跨库检索最多四路，局部失败保留成功片段，按请求顺�
   const result = await retrieve(client, 'P1', await loadRules(), new AbortController().signal)
   assert.equal(peak, 4)
   assert.equal(result.evidence.length, 2)
-  assert.deepEqual(result.evidence.map(e => [e.id, e.knowledgeBaseId]), [['K1', 'B1'], ['K2', 'B2']])
+  assert.deepEqual(result.evidence.map(e => e.knowledgeBaseId), ['B1', 'B2'])
+  assert.equal(new Set(result.evidence.map(e => e.id)).size, 2)
+  const again = await retrieve(client, 'P1', await loadRules(), new AbortController().signal)
+  assert.deepEqual(again.evidence.map(e => e.id), result.evidence.map(e => e.id))
   assert.equal(result.coverage[0].status, 'partial')
   assert.equal(result.coverage[0].errors.length, 1)
   assert.equal(result.coverage[1].status, 'matched')

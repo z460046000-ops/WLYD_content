@@ -230,3 +230,96 @@ test('篇幅软目标合并解决方案子节点，忽略标题和引用，缺�
   assert.equal(custom.applicable, false)
   assert.deepEqual(custom.reviewItems, [])
 })
+
+test('每章拿自己的证据；具体缺项只补一轮，新增原文进入撰写与最终复核', async () => {
+  const initial = { id: 'A', content: '销售人员可以统一维护线索记录。' }
+  const other = { id: 'B', content: '财务人员根据审批制度核验凭证。' }
+  const extra = { id: 'C', content: '销售转交线索时需要接收人确认。' }
+  const noise = { id: 'N', content: '机房空调维护注意事项。'.repeat(100) }
+  const all = [initial, other, noise]
+  const supplied = []
+  const calls = []
+  const f = await fixture(fakeModel(prompt => {
+    supplied.push(prompt)
+    if (prompt.stage === 'plan') return { title: '协作方案', chapterGuidance: [] }
+    if (prompt.stage === 'extract') return { facts: prompt.evidence.map(source => ({
+      text: source.content, evidence: [{ id: source.id, quote: source.content }],
+    })), writingOutline: [], retrievalQueries: prompt.chapter.key === 'sales' ? ['销售转交如何确认'] : [] }
+    if (prompt.stage === 'consistency-review') return { reviewItems: [] }
+    assert.equal(prompt.stage, 'write')
+    return { sections: [{ key: prompt.chapter.key, blocks: prompt.evidence.map((source, i) => ({
+      id: `${prompt.chapter.key}-${i + 1}`, text: source.content, supportMode: 'sourced',
+      evidence: [{ id: source.id, quote: source.content }],
+    })) }] }
+  }))
+  f.options.outline = ['sales', 'finance'].map(key => ({ key, title: key, roleId: 'custom' }))
+  f.options.evidence = all
+  f.options.planningEvidence = [initial, other]
+  f.options.retrieval = {
+    issues: [], catalog: () => ({ documents: ['sales', 'finance'] }), flush: async () => {},
+    forChapter: async (node, _plan, queries = []) => {
+      calls.push({ key: node.key, queries })
+      if (queries.length) { all.push(extra); return [extra] }
+      return node.key === 'sales' ? [initial] : [other]
+    },
+    selectForSections: sections => all.filter(source => sections.some(section =>
+      section.blocks.some(block => block.evidence.some(ref => ref.id === source.id)))),
+  }
+  const result = await generateChapters(f.options)
+  assert.equal(calls.filter(call => call.queries.length).length, 1)
+  assert.equal(f.state.chapters.find(chapter => chapter.key === 'sales').supplementRounds, 1)
+  const sales = supplied.find(prompt => prompt.stage === 'write' && prompt.chapter.key === 'sales')
+  assert.deepEqual(sales.evidence.map(source => source.id), ['A', 'C'])
+  const finance = supplied.find(prompt => prompt.stage === 'write' && prompt.chapter.key === 'finance')
+  assert.deepEqual(finance.evidence.map(source => source.id), ['B'])
+  assert.ok(!supplied.some(prompt => prompt.evidence.some(source => source.id === 'N')))
+  assert.equal(result.sections.length, 2)
+  assert.deepEqual(new Set(supplied.at(-1).evidence.map(source => source.id)), new Set(['A', 'B', 'C']))
+  for (const [i, record] of f.state.modelRequests.entries()) {
+    assert.equal(record.evidenceCharacters, supplied[i].evidence.reduce((sum, source) => sum + source.content.length, 0))
+    assert.equal(record.inputBytes, Buffer.byteLength(JSON.stringify(supplied[i])))
+    assert.equal(record.usage, null)
+    assert.ok(record.requestStartedAt && record.finishedAt && record.serviceMs >= 0)
+  }
+})
+
+test('补充提取失败仍保留首次事实；共享规划失败明确降级，其他章继续', async () => {
+  const f = await fixture(fakeModel(prompt => {
+    if (prompt.stage === 'plan') throw new Error('plan unavailable')
+    if (prompt.stage === 'extract' && prompt.retrievalRound) throw new Error('supplement unavailable')
+    if (prompt.stage === 'extract') return { ...answerFor(prompt), retrievalQueries: ['需要进一步核实交接方式'] }
+    if (prompt.stage === 'write') assert.ok(prompt.extraction.facts.length)
+    return answerFor(prompt)
+  }))
+  const extra = { id: 'new', content: '可以记录线索接收确认时间。' }
+  f.options.evidence = [...evidence]
+  f.options.planningEvidence = evidence
+  f.options.retrieval = { issues: [], catalog: () => ({}), flush: async () => {},
+    forChapter: async (_node, _plan, queries = []) => queries.length ? [extra] : evidence,
+    selectForSections: () => evidence }
+  const result = await generateChapters(f.options)
+  assert.equal(f.state.planning.status, 'degraded')
+  assert.match(f.state.planning.error, /plan unavailable/u)
+  assert.equal(result.sections.length, 9)
+  assert.ok(result.reviewItems.some(item => item.includes('supplement unavailable')))
+  assert.ok(f.state.chapters.every(chapter => chapter.supplementRounds === 1))
+})
+
+test('整稿复核超上下文后按章与场景关系拆分，保留完整正文不截断', async () => {
+  const calls = []
+  const f = await fixture(fakeModel(prompt => {
+    if (prompt.stage === 'consistency-review') {
+      calls.push(prompt)
+      if (prompt.reviewScope === 'whole-report') throw Object.assign(new Error('maximum context length exceeded'), { code: 'context_length_exceeded' })
+    }
+    return answerFor(prompt)
+  }))
+  const result = await generateChapters(f.options)
+  assert.equal(calls.filter(prompt => prompt.reviewScope === 'whole-report').length, 1)
+  assert.equal(calls.filter(prompt => prompt.reviewScope.startsWith('chapter:')).length, 9)
+  assert.ok(calls.some(prompt => prompt.reviewScope.startsWith('relationship:')))
+  const chapterReview = calls.filter(prompt => prompt.reviewScope.startsWith('chapter:')).flatMap(prompt => prompt.sections)
+  assert.deepEqual(chapterReview, result.sections)
+  assert.equal(f.state.review.mode, 'split')
+  assert.equal(f.state.review.status, 'completed')
+})

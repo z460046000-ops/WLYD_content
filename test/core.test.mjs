@@ -134,25 +134,39 @@ test('DSH 服务声明允许工作区文件读取，附件经可选服务读取'
   assert.ok(result.files.every(file => file.materialPath))
 })
 
-test('宽泛查询保留非提取问题命中的所有片段并传给模型', async () => {
+test('宽泛命中的其他有价值材料完整存档，各阶段只传选用的相关原文', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'wlyd-retrieval-test-'))
   const exec = { agent: { session: { header: { cwd } }, options: { provider: 'fake', model: 'fake' } }, signal: new AbortController().signal }
   const queries = []
   const client = { visibleProjectBases: async () => ['K1'], documents: async () => [{ id: 'D1', parse_status: 'completed' }],
     search: async (_base, query) => {
       queries.push(query)
-      return query.startsWith('本项目材料') ? Array.from({ length: 30 }, (_, index) => ({
-        chunk_id: `C${index + 1}`, knowledge_id: 'D1', content: `非预设问题也有价值的材料片段 ${index + 1}，用于业务方案。`,
-      })) : []
+      return Array.from({ length: 30 }, (_, index) => ({ chunk_id: `C${index + 1}`, knowledge_id: 'D1',
+        content: `非预设问题也有价值的售后服务材料片段 ${index + 1}，用于业务方案。` }))
     } }
-  let suppliedEvidence
-  const llm = draftModel({ title: '业务方案', sections: [{ key: 'solution', title: '解决方案', blocks: [{
-    text: '非预设问题也有价值的材料可用于业务方案。', evidence: [{ id: 'K1', quote: '非预设问题也有价值的材料片段' }],
-  }] }], gaps: [] }, prompt => { suppliedEvidence = prompt.evidence })
-  await assemble({ client, llm, args: { project_id: 'P1' }, exec })
-  assert.ok(queries.some(query => query.startsWith('本项目材料')))
-  assert.equal(suppliedEvidence.length, 30)
-  assert.match(suppliedEvidence[29].content, /片段 30/u)
+  const supplied = []
+  const draft = { title: '服务方案', sections: [{ key: 'service', blocks: [{
+    text: '非预设问题也有价值的售后服务材料可用于业务方案。', evidence: [],
+  }] }] }
+  const llm = draftModel(draft, prompt => {
+    supplied.push({ stage: prompt.stage, evidence: prompt.evidence })
+    if (prompt.stage === 'write') draft.sections[0].blocks[0].evidence = [
+      { id: prompt.evidence[0].id, quote: '非预设问题也有价值的售后服务材料片段' },
+    ]
+  })
+  const result = await assemble({ client, llm, args: { project_id: 'P1', outline: [
+    { key: 'service', title: '售后服务', roleId: 'delivery-service' },
+  ] }, exec })
+  const archive = JSON.parse(await readFile(result.evidencePath, 'utf8'))
+  assert.equal(archive.evidence.length, 30)
+  assert.ok(archive.evidence.some(item => item.content.includes('片段 30')))
+  assert.ok(supplied.every(call => call.evidence.length < archive.evidence.length))
+  assert.ok(supplied.find(call => call.stage === 'write').evidence.length > 0)
+  assert.equal(supplied.at(-1).stage, 'consistency-review')
+  assert.ok(supplied.at(-1).evidence.length < supplied.find(call => call.stage === 'write').evidence.length)
+  const audit = JSON.parse(await readFile(result.retrievalPath, 'utf8'))
+  assert.ok(audit.queries.some(query => query.chapterKey === 'service'))
+  assert.ok(queries.length > 2)
 })
 
 test('无逐字引文、无来源数字和目录外章节不能进入成稿', () => {
@@ -251,7 +265,8 @@ test('本地材料到报告保留来源、待确认候选与缺章；平台不�
   assert.match(await readFile(result.reportPath, 'utf8'), /【待确认·典型场景假设】/u)
   assert.equal(report.ruleFingerprint.length, 64)
   assert.ok(evidence.evidence[0].content.includes('客户需要'))
-  assert.ok(materialPieces > 12)
+  assert.ok(evidence.evidence.length > 12)
+  assert.ok(materialPieces < evidence.evidence.length)
 })
 
 test('唯一授权项目默认上传；pending 和 finalizing 均能查询到 completed', async () => {

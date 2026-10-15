@@ -98,4 +98,35 @@ export class PlatformClient {
       query_text: query, match_count: 50, knowledge_ids: documentIds, skip_context_enrichment: true,
     }, signal)).data
   }
+
+  /** Return original chunks only. A missing unified route may use the legacy hybrid endpoint. */
+  async searchEvidence(baseId, query, documentIds, signal, { topK = 12 } = {}) {
+    if (!Array.isArray(documentIds) || !documentIds.length) throw new Error('没有可检索的已完成文档')
+    const allowed = new Set(documentIds.map(String))
+    const limit = Number.isInteger(topK) ? Math.min(100, Math.max(1, topK)) : 12
+    const route = `/api/v1/knowledge-bases/${id(baseId)}/retrieval/query`
+    try {
+      const response = await this.request('POST', route, {
+        query: { text: String(query), filters: { knowledge_ids: [...allowed] } },
+        sources: [{ type: 'hybrid', top_k: limit }],
+        options: { include_citations: true },
+      }, signal)
+      const data = response.data
+      const hybrid = data?.sources?.hybrid
+      if (!hybrid || !['completed', 'failed'].includes(hybrid.status)) throw new Error('统一检索响应缺少 hybrid 状态')
+      const items = hybrid.status === 'completed' && Array.isArray(hybrid.items) ? hybrid.items : []
+      if (hybrid.status === 'completed' && !Array.isArray(hybrid.items)) throw new Error('统一检索响应缺少 hybrid.items')
+      return { items: items.filter(item => allowed.has(String(item?.knowledge_id))),
+        status: hybrid.status, partial: Boolean(data.meta?.partial), traceId: data.meta?.trace_id || null,
+        source: 'unified', ...(hybrid.status === 'failed' ? { error: hybrid.error?.message || 'hybrid 检索失败' } : {}) }
+    } catch (error) {
+      if (![404, 405].includes(error.status)) throw error
+      const response = await this.request('POST', `/api/v1/knowledge-bases/${id(baseId)}/hybrid-search`, {
+        query_text: String(query), match_count: limit, knowledge_ids: [...allowed], skip_context_enrichment: true,
+      }, signal)
+      if (!Array.isArray(response.data)) throw new Error('旧检索响应异常')
+      return { items: response.data.filter(item => allowed.has(String(item?.knowledge_id))),
+        status: 'completed', partial: false, traceId: response.requestId || null, source: 'legacy' }
+    }
+  }
 }

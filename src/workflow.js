@@ -5,7 +5,7 @@ import { convertFile, MAX_BYTES } from './convert.js'
 import { loadRules, validateOutline, flattenOutline, requestedModes } from './rules.js'
 import { generateChapters } from './generation.js'
 import { reportText } from './content.js'
-import { createLimiter, mapConcurrent } from './scheduler.js'
+import { createRetrieval } from './retrieval.js'
 export { validateDraft } from './content.js'
 
 const sha256 = value => createHash('sha256').update(value).digest('hex')
@@ -18,7 +18,6 @@ const runPath = (agent, runId) => {
 const safeName = name => path.basename(String(name)).replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 100) || 'material'
 const attachmentKey = value => /^[a-f0-9]{64}$/u.test(String(value)) ? `sha256:${value}` : String(value)
 const deepClone = value => JSON.parse(JSON.stringify(value))
-const retrievalSlot = createLimiter(4)
 
 async function* readInputs(ctx, exec, args) {
   const paths = Array.isArray(args.files) ? args.files : []
@@ -179,64 +178,16 @@ function localEvidence(text, file) {
   }
   if (current) result.push(current)
   return result.map((content, index) => ({ id: `M${file.index}-${index + 1}`,
-    kind: 'material', source: file.name, sourceSha256: file.sha256, locator: `${file.materialPath}#${index + 1}`, content }))
+    kind: 'material', source: file.name, sourceSha256: file.contentSha256 || file.sha256 || null, locator: `${file.materialPath}#${index + 1}`, content }))
 }
 
+/** Compatibility entry for discovery; generation owns chapter-specific retrieval. */
 export async function retrieve(client, projectId, rules, signal) {
-  const bases = await client.visibleProjectBases(projectId, signal)
   const evidence = []
-  const coverage = []
-  const priority = ['product-architecture', 'scenario-solution', 'business-challenges', 'policy-trends']
-  const ordered = [...priority.map(role => rules.chapters[role]).filter(Boolean), ...Object.values(rules.chapters)]
-  const questions = [...new Set([
-    '本项目材料的主要内容、产品能力、业务场景、客户问题与行业背景',
-    '还有哪些值得纳入方案的事实、限制条件、案例、服务和企业信息',
-    ...ordered.flatMap(rule => rule.extractQuestions.slice(0, 1)),
-  ])]
-  const prepared = await mapConcurrent(bases, baseId => retrievalSlot(async () => {
-    const docs = await client.documents(baseId, signal)
-    const completed = docs.filter(doc => doc.parse_status === 'completed').map(doc => String(doc.id))
-    return { baseId, completed }
-  }, signal), { signal })
-  const jobs = []
-  const byBase = new Map()
-  for (const [index, result] of prepared.entries()) {
-    const baseId = bases[index]
-    if (result.status === 'rejected') { coverage.push({ baseId, status: 'failed', error: result.reason.message }); continue }
-    const { completed } = result.value
-    const item = { baseId, status: completed.length ? 'empty' : 'no_completed_documents', hits: 0, errors: [] }
-    coverage.push(item); byBase.set(baseId, item)
-    if (completed.length) jobs.push(...questions.map(question => ({ baseId, completed, question })))
-  }
-  const results = await mapConcurrent(jobs, job => retrievalSlot(async () => {
-    const rows = await client.search(job.baseId, job.question, job.completed, signal)
-    if (!Array.isArray(rows)) throw new Error('检索响应异常')
-    return rows
-  }, signal), { signal })
-  const seen = new Set()
-  for (const [index, result] of results.entries()) {
-    const { baseId, completed, question } = jobs[index]
-    const item = byBase.get(baseId)
-    if (result.status === 'rejected') { item.errors.push({ question, error: result.reason.message }); continue }
-    for (const row of result.value) {
-      if (!row) continue
-      const chunkId = String(row.chunk_id ?? row.id ?? '')
-      const knowledgeId = String(row.knowledge_id ?? '')
-      const content = String(row.content ?? row.matched_content ?? '').trim()
-      const key = `${baseId}:${chunkId}`
-      if (!chunkId || !completed.includes(knowledgeId) || !content || seen.has(key)) continue
-      seen.add(key)
-      item.hits++
-      evidence.push({ id: `K${evidence.length + 1}`, kind: 'knowledge', knowledgeBaseId: baseId,
-        knowledgeId, chunkId, source: String(row.knowledge_title || row.knowledge_filename || knowledgeId),
-        locator: `chunk=${chunkId}${row.chunk_index != null ? `;index=${row.chunk_index}` : ''}`, content })
-    }
-  }
-  for (const item of coverage) if (item.status !== 'failed' && item.status !== 'no_completed_documents') {
-    const failed = item.errors.length
-    item.status = failed === questions.length ? 'failed' : failed ? 'partial' : item.hits ? 'matched' : 'empty'
-  }
-  return { evidence, coverage, bases }
+  const retrieval = await createRetrieval({ client, projectId, rules, signal, evidence, outline: rules.template.sections })
+  await retrieval.prepare()
+  await retrieval.discover()
+  return { evidence, coverage: retrieval.coverage, issues: retrieval.issues }
 }
 
 
@@ -278,18 +229,22 @@ export async function assemble({ client, llm, args, exec }) {
       }
       if (!state.projectId && sourceState.projectId) state.projectId = sourceState.projectId
     }
-    let retrieval = { evidence: [], coverage: [], bases: [] }
-    if (state.projectId) {
-      try { retrieval = await retrieve(client, state.projectId, rules, exec.signal) }
-      catch (error) { gaps.push(`知识检索失败：${error.message}`); state.retrievalError = error.message }
+    const retrieval = await createRetrieval({ client, projectId: state.projectId, rules, outline,
+      audience: args.audience, evidence, dir, signal: exec.signal })
+    await retrieval.prepare()
+    const planningEvidence = await retrieval.discover()
+    state.retrieval = { status: retrieval.issues.length ? 'partial' : 'ready', planningEvidenceCount: planningEvidence.length }
+    if (!evidence.length && !retrieval.coverage.some(item => item.completedDocuments > 0)) {
+      throw new Error('没有可核对的材料或授权知识片段，未生成空稿')
     }
-    evidence.push(...retrieval.evidence)
-    for (const item of retrieval.coverage.filter(item => ['partial', 'failed'].includes(item.status))) {
-      gaps.push(`知识库 ${item.baseId} 检索${item.status === 'partial' ? '部分' : ''}失败，已保留其他成功结果；详见 evidence.json.coverage`)
-    }
-    if (!evidence.length) throw new Error('没有可核对的材料或授权知识片段，未生成空稿')
-    await writeJson(path.join(dir, 'evidence.json'), { evidence, coverage: retrieval.coverage, gaps })
-    const generated = await generateChapters({ client, llm, args, exec, rules, outline, evidence, dir, state, saveState })
+    await retrieval.flush()
+    let generated
+    try {
+      generated = await generateChapters({ llm, args, exec, rules, outline, evidence, dir, state, saveState, retrieval, planningEvidence })
+    } finally { await retrieval.flush() }
+    await writeJson(path.join(dir, 'evidence.json'), { evidence, coverage: retrieval.coverage, gaps,
+      reviewItems: retrieval.issues })
+    state.retrieval.status = retrieval.issues.length ? 'partial' : 'completed'
     state.outlineSha256 = sha256(JSON.stringify(generated.outline))
     const proposedTitle = String(generated.title || '产品售前解决方案').slice(0, 120)
     const titleNumbers = proposedTitle.match(/\d+(?:[.,]\d+)*(?:%|％|万|亿|年|月|日|家|人)?/gu) ?? []
@@ -310,9 +265,9 @@ export async function assemble({ client, llm, args, exec }) {
     state.status = 'needs_human_review'; state.sections = report.sections.length; state.evidence = evidence.length
     await saveState()
     return { runId: outputId, status: state.status, sections: report.sections.length, evidence: evidence.length,
-      choices: report.choices, failedChapters: state.chapters.filter(item => item.status === 'failed').map(item => item.title),
+      choices: report.choices, planningStatus: state.planning.status, failedChapters: state.chapters.filter(item => item.status === 'failed').map(item => item.title),
       reviewItemsCount: report.reviewItems.length, gapsCount: report.gaps.length,
-      reportPath: path.join(dir, 'report.md'), jsonPath: path.join(dir, 'report.json'), evidencePath: path.join(dir, 'evidence.json') }
+      reportPath: path.join(dir, 'report.md'), jsonPath: path.join(dir, 'report.json'), evidencePath: path.join(dir, 'evidence.json'), retrievalPath: path.join(dir, 'retrieval.json') }
   } catch (error) { state.status = exec.signal?.aborted ? 'cancelled' : 'failed'; state.error = error.message; throw error }
   finally { await saveState() }
 }
