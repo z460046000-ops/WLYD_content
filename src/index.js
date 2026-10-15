@@ -8,7 +8,57 @@ const output = { schema: { type: 'object', additionalProperties: true, propertie
   render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] }
 const card = (title, kind, rawInput = {}) => ({ card: 'generic', title, kind, rawInput })
 
+// 智谱 coding 网关 2026-10 起要求工具 parameters 为严格标准 JSON Schema：
+// 解包式 schema（属性平铺 + 内联 required:true）会导致模型恒输出空参数 {}，
+// 工具能调用但永远拿不到参数。注册时统一包裹转换，一处改动覆盖全部工具。
+function stdSchemaNode(node) {
+  if (Array.isArray(node)) return node.map(stdSchemaNode)
+  if (!node || typeof node !== 'object') return node
+  const out = {}
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'required') continue
+    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const props = {}
+      const req = []
+      for (const [pk, pv] of Object.entries(value)) {
+        if (pv && pv.required === true) req.push(pk)
+        props[pk] = stdSchemaNode(pv)
+      }
+      out.properties = props
+      if (req.length) out.required = req
+      continue
+    }
+    if (key === 'items' && value && typeof value === 'object') {
+      out.items = stdSchemaNode(value)
+      continue
+    }
+    out[key] = value
+  }
+  return out
+}
+
+function wrapParams(params) {
+  const properties = {}
+  const required = []
+  for (const [key, value] of Object.entries(params ?? {})) {
+    if (value && value.required === true) required.push(key)
+    properties[key] = stdSchemaNode(value)
+  }
+  const wrapped = { type: 'object', properties }
+  if (required.length) wrapped.required = required
+  return wrapped
+}
+
 export function apply(ctx, config = {}) {
+  const toolsService = ctx.tools
+  const rawRegister = toolsService.register.bind(toolsService)
+  toolsService.register = tool => {
+    if (tool && typeof tool === 'object' && tool.parameters && typeof tool.parameters === 'object'
+      && tool.parameters.type !== 'object') {
+      return rawRegister({ ...tool, parameters: wrapParams(tool.parameters) })
+    }
+    return rawRegister(tool)
+  }
   const client = new PlatformClient(resolveConfig(config))
 
   ctx.tools.register({
