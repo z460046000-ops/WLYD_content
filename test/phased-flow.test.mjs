@@ -46,7 +46,7 @@ test('规划宏观取材并绑定身份目标，明确确认版本后才能生�
       assert.equal(prompt.author.author_identity, '营销顾问')
       assert.equal(prompt.audience, '营销负责人')
       assert.ok(!Object.hasOwn(prompt, 'panoramaRules'))
-      assert.equal(request.maxTokens, 4096)
+      assert.equal(Object.hasOwn(request, 'maxTokens'), false)
       return { title: '线索协作方案', chapterGuidance: [{ key: 'service', focus: '解释交接服务', retrievalQueries: ['交接如何确认'] }] }
     }
     return { facts: prompt.evidence.map(source => ({ text: content, evidence: [{ id: source.id, quote: '产品支持统一线索记录' }] })) }
@@ -76,7 +76,7 @@ test('模型能力声明决定低思考档位，不继承会话 high；输出预
   const selection = await resolveWritingModel(llm, f.exec.agent, f.exec.signal)
   assert.equal(selection.reasoningEffort, 'low')
   assert.equal(selection.reasoningPolicy, 'low')
-  assert.equal(stageOutputBudget('write', selection), 6144)
+  assert.equal(stageOutputBudget('write', selection), undefined)
   const unverified = await resolveWritingModel({}, f.exec.agent)
   assert.equal(unverified.reasoningEffort, undefined)
   assert.equal(unverified.reasoningPolicy, 'unverified')
@@ -109,7 +109,7 @@ test('长原文分批覆盖到末尾，条件窗口重叠，资源限制只拆�
   const facts = await collectFacts({ common: {}, node: { key: 'chapter' }, rule: {}, plan: {}, evidence: long,
     request: async prompt => {
       const size = prompt.evidence.reduce((sum, source) => sum + source.content.length, 0); sizes.push(size)
-      if (size > 3000) throw Object.assign(new Error('output limit'), { code: 'MODEL_OUTPUT_LIMIT' })
+      if (size > 3000) throw Object.assign(new Error('output limit after partial body'), { code: 'MODEL_OUTPUT_LIMIT', outputCharacters: 80 })
       return { facts: prompt.evidence.map(source => ({ text: '保留业务信息和试点边界', evidence: [{ id: source.id, quote: source.content.slice(0, 30) }] })) }
     } })
   assert.ok(facts.batches.some(batch => batch.status === 'split'))

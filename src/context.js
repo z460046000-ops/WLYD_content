@@ -1,9 +1,9 @@
-import { writeFile } from 'node:fs/promises'
+import { atomicJson } from './persistence.js'
 import { askModel, resolveWritingModel, stageOutputBudget } from './model.js'
 
 export const list = value => Array.isArray(value) ? value : []
 export const strings = value => [...new Set(list(value).filter(item => typeof item === 'string' && item.trim()).map(item => item.trim()))]
-export const writeJson = (file, value) => writeFile(file, JSON.stringify(value, null, 2), { mode: 0o600 })
+export const writeJson = atomicJson
 export const NON_REPEATABLE = new Set(['MODEL_CONTEXT_LIMIT', 'MODEL_OUTPUT_LIMIT', 'MODEL_STAGE_TIMEOUT', 'MODEL_QUEUE_TIMEOUT'])
 
 /** Stage projections: full rules stay in the run fingerprint, not every prompt. */
@@ -16,9 +16,9 @@ export function commonContext(rules, args) {
 }
 
 export async function createRequester({ llm, exec, state, saveState }) {
-  const selection = await resolveWritingModel(llm, exec.agent, exec.signal)
+  const selection = state.modelSelection || await resolveWritingModel(llm, exec.agent, exec.signal)
   state.modelSelection = selection
-  state.modelRequests = []
+  state.modelRequests ||= []
   await saveState()
   return async prompt => {
     const input = JSON.stringify(prompt)
@@ -30,7 +30,8 @@ export async function createRequester({ llm, exec, state, saveState }) {
       inputCharacters: input.length, inputBytes: Buffer.byteLength(input), inputCharacterUnit: 'UTF-16',
       evidenceCount: supplied.length, evidenceIds: supplied.map(item => item.id),
       evidenceCharacters: supplied.reduce((n, item) => n + item.content.length, 0),
-      ...selection, startedAt: new Date().toISOString(), status: 'pending' }
+      ...selection, outputBudgetSource: stageOutputBudget(prompt.stage, selection) === undefined ? 'adapter-default' : 'plugin-config',
+      resumeAttempt: state.resumeCount || 0, startedAt: new Date().toISOString(), status: 'pending' }
     state.modelRequests.push(record); await saveState()
     try {
       const result = await askModel(llm, exec.agent, exec.signal, prompt, { modelSelection: selection,

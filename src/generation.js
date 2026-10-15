@@ -5,11 +5,56 @@ import { flattenOutline, FRAMEWORK_DIMENSIONS } from './rules.js'
 import { validateDraft, PANORAMA_ROLES } from './content.js'
 import { createRetrieval } from './retrieval.js'
 import { collectFacts } from './facts.js'
+import { classifyModelFailure } from './model.js'
+import { sha256 } from './store.js'
+import { readJson } from './persistence.js'
 import { reviewAssembly } from './review.js'
 import { enrichPanoramas } from './panorama.js'
-import { list, strings, writeJson, createRequester, commonContext, chapterPlan, citedEvidence, itemBatches, uniqueFacts, NON_REPEATABLE } from './context.js'
+import { list, strings, writeJson, createRequester, commonContext, chapterPlan, citedEvidence, itemBatches, uniqueFacts, checkedFacts } from './context.js'
 export { normalizePlan, applyPlanTitles } from './plan-model.js'
 const SOLUTION_WEIGHTS = { solution: 0.15, 'business-architecture': 0.18, 'product-architecture': 0.17, 'scenario-solution': 0.5 }
+
+const digest = value => sha256(JSON.stringify(value))
+const provenance = source => ({ id: source.id, contentSha256: sha256(String(source.content || '')),
+  ...Object.fromEntries(['kind', 'source', 'sourceSha256', 'locator', 'knowledgeBaseId', 'knowledgeId', 'chunkId']
+    .filter(key => source[key] !== undefined).map(key => [key, source[key]])) })
+
+/** Reuse only atomically completed files bound to this plan, rules and exact source provenance. */
+async function reusableChapter({ chapterDir, bindingSha256, evidence, node, plan, completed }) {
+  try {
+    const checkpoint = await readJson(path.join(chapterDir, 'checkpoint.json'), null)
+    if (!checkpoint || checkpoint.version !== 1 || checkpoint.bindingSha256 !== bindingSha256
+      || !['extracted', 'completed'].includes(checkpoint.phase) || !Array.isArray(checkpoint.evidence)) return null
+    const sources = new Map(evidence.map(row => [row.id, row]))
+    const chapterEvidence = checkpoint.evidence.map(row => sources.get(row.id))
+    if (chapterEvidence.some((row, index) => !row || digest(provenance(row)) !== digest(checkpoint.evidence[index]))) return null
+    const extraction = await readJson(path.join(chapterDir, 'extraction.json'), null)
+    if (!extraction || digest(extraction) !== checkpoint.extractionSha256 || !Array.isArray(extraction.facts)
+      || checkedFacts(extraction, chapterEvidence).length !== extraction.facts.length
+      || !['writingOutline', 'retrievalQueries', 'gaps', 'reviewItems', 'batches'].every(key => Array.isArray(extraction[key]))) return null
+    let chapter = null
+    if (completed && checkpoint.phase === 'completed') {
+      const saved = await readJson(path.join(chapterDir, 'chapter.json'), null)
+      if (saved?.section?.key === node.key && digest(saved) === checkpoint.chapterSha256
+        && ['validationIssues', 'gaps', 'reviewItems'].every(key => Array.isArray(saved[key]))) {
+        const checked = validateDraft({ sections: [saved.section] }, evidence, [node], plan)
+        if (!checked.issues.length && checked.sections[0]?.blocks.length === saved.section.blocks.length) {
+          chapter = { ...saved, section: checked.sections[0] }
+        }
+      }
+    }
+    return { checkpoint, extraction, chapterEvidence, chapter }
+  } catch { return null }
+}
+
+function writingBatchSize(node, selection) {
+  const foundational = ['business-challenges', 'scenario-solution', 'technical-platform'].includes(node.roleId)
+  const panorama = PANORAMA_ROLES.includes(node.roleId)
+  const base = panorama ? { characters: 3600, count: 3 } : foundational ? { characters: 4200, count: 3 } : { characters: 5000, count: 5 }
+  // A route with a small configured default benefits from smaller tasks, not a second output cap.
+  return selection?.defaultMaxTokens > 0 && selection.defaultMaxTokens < 6000
+    ? { characters: Math.min(base.characters, 2800), count: Math.min(base.count, 2) } : base
+}
 
 function groupsFor(outline, config) {
   const groups = new Map()
@@ -78,7 +123,7 @@ function linksFromPlan(plan, sections, outline) {
 const writingContract = '只写当前章节，标题与 key 使用目录给定值。事实逐段 supportMode=sourced，附原文 evidence:[{id,quote}]；引文逐字复制至少六字，含数字的正文须在引文中支持相同数字。合理推演用条件语气并标 supportMode=candidate，不能冒充客户事实、已具备能力、正式政策或效果承诺。保留所有有价值的相关材料，extractQuestions 只是重点。大段原文先概括关键意思，再用简短小标题或短语引出论点，并以短句解释动作、因果、条件和边界；不得把长原文直接堆入正文，也不能为短语化丢掉事实与引文。业务章采用所选一种写法，趋势章只用所选一种框架。对外读者不能把厂商内部研发问题、经营判断当客户痛点。问题与方案以共享规划 ID 对应；每个段落给 planRefs:{capabilityIds,scenarioIds,problemIds,trendIds}。只有真正缺失的事实进入 gaps；关系不足在 reviewItems 中说明，正文可保留待确认候选。'
 
 /** All chapter pipelines are submitted together; shared model slots still bound actual requests. */
-export async function generateChapters({ llm, exec, args, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan }) {
+export async function generateChapters({ llm, exec, args, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan, resume = false }) {
   if (!acceptedPlan) throw new Error('缺少已确认大纲，不能在正文生成中重新规划')
   if (!retrieval) {
     retrieval = createRetrieval({ evidence, dir, signal: exec.signal, rules, outline, audience: args.audience })
@@ -93,7 +138,9 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
   await writeJson(path.join(dir, 'plan.json'), { ...plan, outline, ruleFingerprint: rules.fingerprint, confirmation: { planId: args.plan_id || null, sha256: args.plan_sha256 || null } })
   state.status = 'generating'; state.concurrency = GENERATION_CONCURRENCY; state.chapterScheduling = 'all-parallel'
   state.choices = plan.choices
-  state.chapters = nodes.map(node => ({ key: node.key, title: node.title, status: 'queued', extractAttempts: 0, writeAttempts: 0 }))
+  const priorChapters = new Map((resume ? state.chapters || [] : []).map(row => [row.key, row]))
+  state.chapters = nodes.map(node => ({ key: node.key, title: node.title, status: 'queued', extractAttempts: 0, writeAttempts: 0,
+    ...priorChapters.get(node.key) }))
   await saveState()
   let results
   try {
@@ -103,6 +150,10 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
       await mkdir(chapterDir, { recursive: true, mode: 0o700 })
       const chapterRule = rules.chapters[node.roleId] || rules.global.customChapter
       const scoped = chapterPlan(plan, node)
+      const bindingSha256 = digest({ version: 1, planId: args.plan_id || null, planSha256: args.plan_sha256 || null,
+        plan, outline, node, ruleFingerprint: rules.fingerprint, chapterRule, common,
+        model: { provider: state.modelSelection.provider, model: state.modelSelection.model,
+          reasoningEffort: state.modelSelection.reasoningEffort } })
       const base = { ...common, chapter: node, plan: scoped,
         ...(PANORAMA_ROLES.includes(node.roleId) ? { organization: scoped.chapterGuidance[0]?.organization } : {}),
         chapterRule: { write: chapterRule.write || [], validate: chapterRule.validate || [], missing: chapterRule.missing || '',
@@ -110,17 +161,34 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
         depthBudget: depthBudget(node, nodes, outline, rules.global.contentBalance),
         selectedDimensions: FRAMEWORK_DIMENSIONS[node.framework] || [] }
       try {
-        progress.status = 'retrieving'; await saveState()
-        let chapterEvidence = await retrieval.forChapter(node, plan)
+        const saved = resume ? await reusableChapter({ chapterDir, bindingSha256, evidence, node, plan,
+          completed: progress.status === 'completed' }) : null
+        if (saved?.chapter) {
+          progress.reusedChapter = true; progress.reusedExtraction = true; progress.resumeDecision = 'reused-completed-chapter'
+          delete progress.error; await saveState(); return saved.chapter
+        }
+        progress.reusedChapter = false; progress.reusedExtraction = !!saved
+        progress.resumeDecision = saved ? 'reused-extraction' : resume ? 'checkpoint-unavailable-or-invalid' : 'new-chapter'
+        delete progress.error
+        if (!saved) { progress.status = 'retrieving'; await saveState() }
+        let chapterEvidence = saved?.chapterEvidence || await retrieval.forChapter(node, plan)
         const evidenceIds = new Set(chapterEvidence.map(row => row.id))
         // An injected retrieval adapter must register new sources as well.
         for (const source of chapterEvidence) if (!evidence.some(row => row.id === source.id)) evidence.push(source)
         const onBatch = async () => { progress.status = 'extracting'; progress.extractAttempts++; await saveState() }
-        let extraction = await collectFacts({ request, common: { author: common.author, audience: common.audience }, node,
+        let extraction = saved?.extraction || await collectFacts({ request, common: { author: common.author, audience: common.audience }, node,
           rule: chapterRule, evidence: chapterEvidence, plan: scoped, onBatch,
+          signal: exec.signal,
           onProgress: partial => writeJson(path.join(chapterDir, 'extraction-partial.json'), partial) })
-        await writeJson(path.join(chapterDir, 'extraction.json'), extraction)
-        progress.supplementRounds = 0
+        const saveCheckpoint = async (chapter = null) => {
+          await writeJson(path.join(chapterDir, 'extraction.json'), extraction)
+          await writeJson(path.join(chapterDir, 'checkpoint.json'), { version: 1, bindingSha256,
+            phase: chapter ? 'completed' : 'extracted', evidence: chapterEvidence.map(provenance),
+            extractionSha256: digest(extraction), ...(chapter ? { chapterSha256: digest(chapter) } : {}),
+            savedAt: new Date().toISOString() })
+        }
+        await saveCheckpoint()
+        progress.supplementRounds ||= 0
         if (extraction.retrievalQueries.length) {
           progress.status = 'supplementing'; progress.supplementRounds = 1; await saveState()
           try {
@@ -132,6 +200,7 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
             if (added.length) {
               const extra = await collectFacts({ request, common: { author: common.author, audience: common.audience }, node,
                 rule: chapterRule, evidence: added, plan: scoped, round: 1, onBatch,
+                signal: exec.signal,
                 onProgress: partial => writeJson(path.join(chapterDir, 'supplement-partial.json'), partial) })
               const previous = extraction.facts.length
               const merged = uniqueFacts([...extraction.facts, ...extra.facts])
@@ -145,12 +214,15 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
             if (exec.signal?.aborted) throw error
             extraction.reviewItems.push(`补查或新增事实提取未完成：${error.message}；保留已有事实卡`)
           }
-          await writeJson(path.join(chapterDir, 'extraction.json'), extraction)
+          extraction.retrievalQueries = []
+          await saveCheckpoint()
         }
         progress.evidenceCount = chapterEvidence.length; progress.factCount = extraction.facts.length
         let serial = 0
         const blocks = [], validationIssues = []
-        const parts = itemBatches(extraction.facts, 4500, 4)
+        const batchSize = writingBatchSize(node, state.modelSelection)
+        progress.writingBatchSize = batchSize
+        const parts = itemBatches(extraction.facts, batchSize.characters, batchSize.count)
         if (!parts.length) parts.push([])
         const writePart = async (facts, partId, depth = 0, repairIssues = []) => {
           let delegated = false
@@ -183,7 +255,8 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
           } catch (error) {
             if (exec.signal?.aborted) throw error
             if (delegated) throw error
-            if (NON_REPEATABLE.has(error.code)) {
+            const kind = classifyModelFailure(error)
+            if (kind === 'context' || kind === 'output' && error.outputCharacters > 0) {
               if (depth < 2 && facts.length > 1) {
                 const mid = Math.ceil(facts.length / 2)
                 await writePart(facts.slice(0, mid), `${partId}.1`, depth + 1)
@@ -192,7 +265,7 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
               }
               throw error
             }
-            if (!repairIssues.length) return await writePart(facts, `${partId}-retry`, depth, [error.message])
+            if (kind === 'other' && !error.code && !repairIssues.length) return await writePart(facts, `${partId}-retry`, depth, [error.message])
             throw error
           }
         }
@@ -203,6 +276,7 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
           gaps: strings(extraction.gaps), reviewItems: strings(extraction.reviewItems) }
         await writeJson(path.join(chapterDir, 'draft.json'), { sections: [{ key: node.key, blocks }] })
         await writeJson(path.join(chapterDir, 'chapter.json'), chapter)
+        await saveCheckpoint(chapter)
         progress.status = 'completed'; progress.path = `chapters/${node.key}/chapter.json`; await saveState()
         return chapter
       } catch (error) {
@@ -224,7 +298,7 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
     rules, chapters: successful, evidence, dir, state, saveState, signal: exec.signal,
     selectEvidence: sections => citedEvidence([...sections.flatMap(section => section.blocks), ...plan.capabilities], evidence) })
   const review = await reviewAssembly({ request, common: { author: common.author, audience: common.audience }, plan, outline,
-    sections: enriched.chapters.map(row => row.section), evidence, dir, state, saveState, signal: exec.signal })
+    sections: enriched.chapters.map(row => row.section), evidence, dir, state, saveState, signal: exec.signal, ruleFingerprint: rules.fingerprint })
   const checked = validateDraft({ sections: review.sections, assemblyLinks: linksFromPlan(plan, review.sections, outline) }, evidence, outline, plan)
   const balance = contentBalance(checked.sections, outline, rules.global.contentBalance)
   const gaps = [], reviewItems = [...plan.reviewItems, ...retrieval.issues, ...enriched.reviewItems, ...checked.reviewItems, ...balance.reviewItems, ...review.reviewItems]

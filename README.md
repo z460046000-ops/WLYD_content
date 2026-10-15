@@ -2,7 +2,7 @@
 
 独立 DSH/Cordis 插件：导入材料、同步项目知识库，按规则生成可审阅的解决方案正文。当前输出 Markdown/JSON；HTML 编辑、架构图绘制、PPTX/PDF 导出尚未实现，不依赖旧插件或 HTML Anything。
 
-**当前源码为 0.4.0，第一批流程改造已实现；本轮未打包、部署或运行真实模型。** 最近交付的安装包为 0.3.0，本机已安装版本不会随源码更新。实际验证见 [测试记录](docs/test-record.md)，遗留任务见 [待办](docs/backlog.md)。
+**当前源码版本为 0.5.0：生成改为宿主后台任务，新增取消、去重与断点恢复，并降低复核的重复请求。** 本版测试汇总、打包 SHA-256 和本机安装状态以 [测试记录](docs/test-record.md) 的实际结果为准；没有进行真实模型成稿与耗时验收。源码修改不会自动更新安装版，升级需完整重启 DSH 并核对运行中的工具协议。实际验证见 [测试记录](docs/test-record.md)，遗留任务见 [待办](docs/backlog.md)。
 
 ## 1. 项目、规则和插件在哪里
 
@@ -21,8 +21,10 @@
 
 ```text
 src/
-├── index.js         五个官方工具和参数
-├── workflow.js      材料导入、状态查询、已确认方案生成与报告落盘
+├── index.js         六个官方工具和参数
+├── tasks.js         宿主后台作业、及时返回 runId、查询、取消、重复任务与恢复
+├── persistence.js   原子检查点、任务接纳索引、运行占用与历史保留
+├── workflow.js      材料导入、状态查询、确认版本校验、恢复准备与报告落盘
 ├── planning.js      宏观取材、粗大纲、确认版本和生成前校验
 ├── plan-model.js    主线归一化、模式选择和近义标题校验
 ├── store.js         运行路径、导入材料读取与内容摘要核对
@@ -30,13 +32,13 @@ src/
 ├── platform.js      后端账号、项目、知识库、上传和检索适配
 ├── retrieval.js     授权范围、查询、去重、按章选择与完整证据登记
 ├── context.js       阶段规则投影、请求记录、分批、事实与引文选段
-├── facts.js         分批提取事实卡，资源超限只拆失败批
+├── facts.js         分批提取事实卡，按输入超限与有效输出耗尽分类处理
 ├── generation.js    所有章节并行进入取证、事实卡和分段撰写，按目录合稿
 ├── panorama.js      小范围单轮全景补充，保留原稿
-├── review.js        必经逐段与跨章关联检查、局部修正和复查
+├── review.js        全段与主线合批必检、覆盖记录、局部修正与指纹复用
 ├── content.js       引文、数字、目录、能力边界检查及 Markdown 输出
 ├── model.js         模型路由、低思考适配、输出预算、超时和流式指标
-├── scheduler.js     共享模型/检索额度、排队与取消
+├── scheduler.js     全局与模型路由额度、排队与取消
 ├── rules.js         加载模板、章节角色与规则指纹
 └── schema.js        DSH 工具标准 JSON Schema
 rules/
@@ -56,7 +58,8 @@ flowchart TD
     B --> C[少量宏观取材→粗目录与少量关联主线]
     C --> D[展示给用户，等待确认]
     D --> E[outline action=confirm：固定版本与哈希]
-    E --> F[generate：所有章节进入并行任务]
+    E --> F[generate：接纳后台作业并返回 runId]
+    F --> S[status 查询 / cancel 取消 / 显式 resume 恢复]
     F --> G[每章定向检索→分批事实卡→必要时增量补查]
     G --> H[本章事实卡与必要原文→分段撰写→引文校验]
     H --> I[按目录合稿，小范围按需补全景]
@@ -82,12 +85,16 @@ flowchart TD
 - 原始本地材料和所有已召回片段完整存档。选定长证据按约 2400 字符窗口、160 字符重叠分批，每批约 6000 字符；所有窗口均处理到末尾，**这是批次组织单位，不是全局 token 限额**。模型上下文仍由 DSH/提供方约束。
 - 每批只提取本章相关事实卡，附短的逐字引文，保留条件、否定和边界。每批成功即保存部分结果；本章最终保存 `extraction.json`。
 - 具体不足最多补查一轮，按内容去重，只提取新增证据，合并已有事实卡。记录补查问题、新证据与新事实数量；这些数量不能自动证明缺失已解决。
-- 撰写按事实卡分批，一次通常最多四条事实，不再重复携带原文全集、全量共享计划和全套规则。提供原文引文及其附近条件，原文选段不伪装成整篇材料；校验始终回查完整来源。
-- 超时、输入超限、输出耗尽只拆失败批，递归最多两层；无法再拆则明确失败，不反复原样重试。格式/临时错误最多一次局部重试。单章失败保留其他章节；批次拆分失败时部分事实和原稿文件仍在。
+- 撰写按章节任务与模型元数据组织事实卡批次，重点章和较小路由默认预算使用更小批次，不再重复携带原文全集、全量共享计划和全套规则。提供原文引文及其附近条件，原文选段不伪装成整篇材料；校验始终回查完整来源。
+- 输入超限只拆失败批，最多两层；有可见输出的输出耗尽可减小任务。零正文输出耗尽、429、排队超时、执行超时分别记录，不通过拆材料放大请求。429 统一最多退避两次；临时格式错误至多一次局部重试。单章失败保留其他章节，检查点和错误文件单独留存。
 
-所有章节同时进入任务；每章取证就绪就写，不等待其他章全部提取完。模型请求共享默认八个名额，可配置 1–12；后台查询共享四个名额。超过八章时模型请求会排队，“全章并行任务”不等于无限同时调用模型。取消向活动请求传递信号并停止后续工作；没有跨进程自动恢复。
+所有章节同时进入任务；每章取证就绪就写，不等待其他章全部提取完。模型请求共享默认八个名额，可配置 1–12，并可对具体模型路由设置更小额度；后台查询共享四个名额。路由先取额度，饱和路由不会占住其他路由的全局额度。超过额度会排队，“全章并行任务”不等于无限同时调用模型。
 
-### 前后关联怎么守住
+`generate` 完成校验和作业接纳后返回 `runId`，正文由 DSH 宿主作业继续执行；后续用 `status` 查询和 `cancel` 取消。作业只在 DSH 进程与所属会话生命周期内运行；关电脑或结束进程会停止，不能当云端持久队列。重启后显式 `mode=resume`，校验材料、规则、目录、固定模型与当前授权范围再接续；保留可验证的已完成章节。相同输入默认复用已有任务，`mode=regenerate` 明确创建新运行。旧版没有新版检查点的任务不可直接恢复。
+
+恢复以整章提取、整章成稿为单位，写作中途失败会重写该章，其他完成章保留。全景补充和关联检查也按输入指纹复用，正文、证据或规则变化则重新核对。接纳候选和历史锁保留供排查；孤儿接纳记录会明确报错，不无限冒充排队。
+
+### 守住前后关联的内容
 
 粗大纲阶段固定少量 **产品能力→场景→问题→趋势** 主线和稳定编号，各章只携带相关部分并独立取证。展示顺序按确认目录。典型问题无客户证据时保持假设，不能反推成客户已经发生的事实。
 
@@ -99,17 +106,18 @@ flowchart TD
 4. 政策趋势是否关联实际建设内容。
 5. 是否有矛盾、遗漏、无关堆砌或孤立内容。
 
-每段都进入分批检查；业务问题、趋势和场景再分别寻找跨章候选，包含没有共享编号的新内容。跨章候选按共享编号和词面排序，并保留短索引导航，**有限候选匹配不能证明语义穷尽**。模型需返回每项结果及理由，缺项、超时、输出截断不能算通过。资源限制导致关联分组再拆时，联合语义仍标未完成。
+每段都进入章节批次检查；业务问题、趋势和场景按相关章节与主线合批，保留全部显式对应和无共享编号的候选。每批最多九段、四条主线，导航最多八条；单段过长仍保留原文，不能假称已裁到固定输入上限。跨章候选按共享编号和词面排序，**有限候选匹配不能证明语义穷尽**。状态/归属差异先由程序标记，语义矛盾仍交章节审核；检查覆盖写入 `coverage`。模型需返回每项结果及理由，缺项、超时、输出截断不能算通过。资源限制导致关联分组再拆时，联合语义仍标未完成。
 
-具体问题最多进行一轮局部修正：至多三个检查组，每组最多两段，保持原段落 ID，禁止删除、越界修改、编造来源或将候选提升为事实。原 `chapter.json` 保留，修后稿另存 `assembly-reviewed.json`；有实际修改后重新检查所有组。未解决项保留待审，不循环重跑整篇。
+具体问题最多进行一轮局部修正：至多三个检查组，每组最多两段，保持原段落 ID，禁止删除、越界修改、编造来源或将候选提升为事实。原 `chapter.json` 保留，修后稿另存 `assembly-reviewed.json`。修正后重新组织全部必要检查，按正文、主线、规则和证据指纹复用未变化的结果；只调用受影响或新增批次。无变化修正也记录缓存，未解决项保留待审，不循环重跑整篇。
 
-`assemblyReview.status` 表示检查是否完成，`assemblyReview.passed` 表示本轮模型检查是否通过；缺章时整体不能通过。模型判断仍可能出错，报告最终保持 `needs_human_review`。更完整的“完整待审/部分成稿”状态体验列入第二批。
+`assemblyReview.status` 表示检查是否完成，`assemblyReview.passed` 表示本轮模型检查是否通过；缺章时整体不能通过。生成状态为 `needs_human_review` 时表示正文节点完整、仍需人工审阅；`partial_draft` 明确表示有缺章，`failed` 表示本轮未成功成稿，取消或进程中断另行记录。完整待审不代表模型审核通过，必须同时查看 `assemblyReview` 与覆盖记录。
 
 ### 模型和写作规则
 
 - 固定本次运行的实际会话 provider/model，避免中途切换混入另一条路由。
 - 用 DSH `resolveModelInfo` 查询模型支持的强度，优先选择声明支持的 `low`、`minimal`、`off` 或 `none`；不继承会话 high/max。未提供查询或不支持低档时记录实际限制，使用提供方默认行为，不能宣称已低思考生效。
-- 输出预算：plan 4096、extract 3072、write 6144、复核 3072、局部修正 4096；已知适配器默认输出额度更小时取较小值。这些是请求预算，网关效果待实测。
+- 默认不再设置插件硬编码 `maxTokens`，使用路由默认输出策略；`defaultMaxTokens` 只描述默认值，不能当成能力上限。可用 `WLYD_ASSEMBLY_OUTPUT_BUDGETS` 显式配置阶段或具体路由预算。思考 token 是否计入输出由提供方决定，需看真实 usage/finishReason，不能把字符数当 token。
+- 429 最多退避两次，优先尊重提供方等待时间，加入短抖动；`Retry-After` 超过 60 秒立即停止重试并保留失败原因。等待时释放模型额度，用户取消可终止等待；执行/排队超时不按 429 重试。
 - 记录输入 UTF-16 字符、UTF-8 字节、证据量、首思考/首正文、排队/执行时间、请求预算、结束原因、正文/思考字符量及可得 usage；字符数不是 token，缺 usage 不估算账单。
 - 默认排队 30 分钟，获取名额后执行 10 分钟；延长超时只增加等待窗口，不代表提速。
 - 共用写法为短标题、短语概括及短句解释；保持业务动作、因果、适用条件和引用。业务现状/需求挑战、PEST/管理业务技术各二选一；业务正文 15–30%、解决方案及子章 40–60% 是软目标，不为凑比例编造。
@@ -122,8 +130,9 @@ flowchart TD
 | `wlyd_assembly_projects` | 列出配置账号可见项目 |
 | `wlyd_assembly_ingest` | `files` 或可信 `attachment_refs`，可选项目/库；转换、同步或复用已有文件 |
 | `wlyd_assembly_outline` | `action=preview` 仅预览模板；`plan` 接项目/材料、目录、作者身份与目标；`confirm` 接 `plan_id`、`plan_sha256`、`confirmed=true` |
-| `wlyd_assembly_generate` | **必需**已确认的 `plan_id`、`plan_sha256`；其他参数若提供须与确认版本一致 |
-| `wlyd_assembly_status` | `run_id`，查看导入、大纲规划确认或生成进度；生成/规划状态只读 |
+| `wlyd_assembly_generate` | `mode=start` 默认接纳后台作业，必需已确认的 `plan_id`、`plan_sha256`；`mode=resume` 带 `run_id` 接续，`mode=regenerate` 明确新建；返回 runId |
+| `wlyd_assembly_status` | `run_id`，查看导入、大纲规划确认或后台生成进度；生成/规划状态只读 |
+| `wlyd_assembly_cancel` | `run_id`，按宿主会话授权取消活动作业；保留已完成文件 |
 
 **规划阶段：**
 
@@ -131,19 +140,30 @@ flowchart TD
 
 **确认后生成：**
 
-> 我确认刚才展示的大纲和主线。请确认该 planId 和 planSha256，然后只启动一次生成。完成后告诉我缺章、合稿关联检查结果、耗时与产物路径；失败不要自动整篇重跑。
+> 我确认刚才展示的大纲和主线。使用真实 planId、planSha256 调用 outline action=confirm，再以 mode=start 提交一次 generate。返回 runId 后停下，不循环等待，不重复创建；没有真实确认 ID 或哈希就报告异常。
+
+**查询与接续：**
+
+> 只用 status 查询刚才的 runId，汇总完成、失败和待处理节点、关联检查与覆盖、产物路径，不触发生成。若任务已中断或部分失败，先告诉我具体原因。
+
+> 接续这个 runId：使用 generate mode=resume 和 run_id。复用可验证的完成内容，只处理未完成部分。材料、规则、目录、模型或权限变化时明确说明拒绝原因，不静默新建整篇。
+
+**取消：**
+
+> 对这个 runId 调用 wlyd_assembly_cancel，随后用 status 确认取消结果，保留已有成稿。
 
 **调整目录：**
 
 > 加入“实施与服务”，绑定 delivery-service，放在技术平台之后；重新规划并展示给我确认。
 
-自定义 `roleId=custom` 需说明 `goal`、`audience`、`questions`、`evidenceScope`、`acceptance`。目前没有独立的单章扩写、重写、恢复工具。
+自定义 `roleId=custom` 需说明 `goal`、`audience`、`questions`、`evidenceScope`、`acceptance`。目前可恢复失败或中断任务，尚无任意指定成功章的对话扩写/重写入口。
 
 ## 4. 运行产物
 
 ```text
 artifacts/material-knowledge-assembly/runs/<runId>/
 ├── run.json                  导入、规划或生成状态及请求指标
+├── run-input.json            新版任务固定输入和恢复指纹；不含账号密码
 ├── materials/*.md            导入运行：完整转换材料
 ├── outline-plan.json         规划运行：粗大纲、身份目标、主线、规则与版本哈希
 ├── overview-facts.json       规划运行：代表证据事实卡
@@ -154,31 +174,34 @@ artifacts/material-knowledge-assembly/runs/<runId>/
 │   ├── retrieval.json        最近一轮选择与本章查询日志
 │   ├── extraction-partial.json / supplement-partial.json
 │   ├── extraction.json       合并后的事实卡、来源、批次与待审项
+│   ├── checkpoint.json       章级输入绑定、证据/事实/正文指纹与完成阶段
 │   ├── draft-*.json          各批原始撰写/修正输出
 │   ├── draft.json / chapter.json / error.json
 │   └── enriched.json         有有效全景追加时另存
 ├── panorama-enrichment.json  实际执行全景追加时保存
-├── consistency-review.json  五项必检逐组结果、未完成项、修正记录
+├── consistency-review.json  五项必检、coverage、内容指纹、修正及缓存记录
 ├── assembly-reviewed.json    局部修正后的合稿；原章节文件保留
 └── report.md / report.json   供用户审阅的最终正文与结构化结果
 ```
+
+运行根目录另有 `.requests/` 保存同输入的接纳索引，`.claims/` 保存活动运行占用与历史记录；这些目录不混入正文。去重限定同一工作区，不是平台级全局任务系统。
 
 导入、大纲规划和生成各有自己的 runId。生成用 `sourceRunId` 关联导入，通过 `confirmedPlan` 关联规划。`loadedRules`、`ruleFingerprint` 和规划 SHA-256 可追溯版本。已有导入材料摘要发生变化时要求重新导入。
 
 ## 5. 安装与配置
 
-Node.js 22+、DSH 和内容中台账号为前提。**0.4.0 本轮只交源码**，后续打包部署时执行：
+Node.js 22+、DSH 和内容中台账号为前提。0.5.0 的打包、校验和安装命令：
 
 ```bash
 npm ci
 npm run check
 npm test
 npm pack --pack-destination releases
-shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.4.0.tgz
-dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.4.0.tgz
+shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.5.0.tgz
+dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.5.0.tgz
 ```
 
-这些是后续操作命令，不代表本轮已生成安装包。安装后重启对应 DSH，在插件页核对版本与组件“运行中”。
+更换插件版本后完整重启对应 DSH 并刷新页面，再核对插件版本与组件“运行中”；包版本更新不代表旧进程中的工具定义已刷新。安装验证记录见项目 memory.md，不能把加载成功当成真实组稿验收。
 
 配置优先级：插件 config → 环境变量 → `$DSH_HOME/.env`。
 
@@ -195,7 +218,9 @@ dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assem
 
 | 环境变量 | 默认 / 范围 |
 |---|---|
-| `WLYD_ASSEMBLY_CONCURRENCY` | 模型并发 8，可设 1–12，检索独立四路 |
+| `WLYD_ASSEMBLY_CONCURRENCY` | 全局模型并发 8，可设 1–12，检索独立四路 |
+| `WLYD_ASSEMBLY_ROUTE_CONCURRENCY` | JSON；按 `provider/model`、`provider/*`、provider、default 顺序取值，1–12 且不超过全局额度；未配置使用全局值 |
+| `WLYD_ASSEMBLY_OUTPUT_BUDGETS` | JSON；默认不显式设置。阶段名/default 可配置正整数，`provider/model` 对象可覆盖阶段预算 |
 | `WLYD_ASSEMBLY_QUEUE_TIMEOUT_MS` | 1800000，可设 60000–1800000 |
 | `WLYD_ASSEMBLY_STAGE_TIMEOUT_MS` | 按阶段 JSON，默认 600000，可设 60000–1800000 |
 
@@ -203,8 +228,8 @@ dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assem
 
 ## 6. 仍未打通与验收边界
 
-- 第二批：单独补失败章/重启恢复、跨会话重复任务防护、完整待审与部分成稿的状态体验；第一批没有实现这些入口。
-- 尚未实测本次新流程的真实成稿质量、模型低思考是否被网关执行、输入下降和耗时收益；不承诺固定提速比例。本轮没有真实生成、打包或部署。
+- 本版新增的是本机任务去重、检查点与显式恢复；DSH 退出不会继续后台生成。没有云端队列、远程调度、任意成功章重写或跨设备自动接续。旧版任务没有新版检查点时需重新规划启动。
+- 尚未实测 0.5.0 的真实成稿质量、429 策略与低思考是否被网关执行、输入下降和耗时收益；不承诺固定提速比例。打包、安装与自动化实际结果见测试记录。
 - 知识库关联候选和本地词面选段可能漏材料；原文回读、Wiki/图谱和公开检索未接，缺少来源的政策不能冒充检索结果。
 - UTF-8 文本、Markdown、DOCX、文字 PDF、PPTX、XLSX、ZIP 支持文字提取；不保证图表、图片文字、版式完整。图片/扫描件 OCR、DMG、旧 Office、音视频、链接抓取未接。
 - 单批 100 文件、单文件 500 MB；ZIP 最多 1000 项/共 1 GB。入口限额不证明任意格式 500 MB 全链路可用，真实大文件链路待验收。

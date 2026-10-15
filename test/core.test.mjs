@@ -253,7 +253,7 @@ test('本地材料到报告保留来源、待确认候选与缺章；平台不�
     }] },
   ], gaps: [] }, prompt => { materialPieces = prompt.evidence.length })
   const result = await assembleConfirmed({ client, llm, args: { source_run_id: source.runId }, exec })
-  assert.equal(result.status, 'needs_human_review')
+  assert.equal(result.status, 'partial_draft')
   assert.ok(!Object.hasOwn(result, 'modelRequests'))
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result)
   const report = JSON.parse(await readFile(result.jsonPath, 'utf8'))

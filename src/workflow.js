@@ -8,10 +8,11 @@ import { sourceEvidence, runPath } from './store.js'
 import { generateChapters } from './generation.js'
 import { reportText } from './content.js'
 import { createRetrieval } from './retrieval.js'
+import { atomicJson, readJson } from './persistence.js'
 export { validateDraft } from './content.js'
 
 const sha256 = value => createHash('sha256').update(value).digest('hex')
-const writeJson = (file, value) => writeFile(file, JSON.stringify(value, null, 2), { mode: 0o600 })
+const writeJson = atomicJson
 const safeName = name => path.basename(String(name)).replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 100) || 'material'
 const attachmentKey = value => /^[a-f0-9]{64}$/u.test(String(value)) ? `sha256:${value}` : String(value)
 const deepClone = value => JSON.parse(JSON.stringify(value))
@@ -173,15 +174,15 @@ export async function retrieve(client, projectId, rules, signal) {
 }
 
 
-export async function assemble({ client, llm, args, exec }) {
-  const confirmed = await confirmedPlan({ args, exec })
+export async function assemble({ client, llm, args, exec, runId, prepared, resume = false }) {
+  const confirmed = prepared || await confirmedPlan({ args, exec })
   const rules = confirmed.rules
   args = confirmed.args
   const outline = deepClone(confirmed.document.outline)
-  const outputId = randomUUID()
+  const outputId = runId || randomUUID()
   const dir = runPath(exec.agent, outputId)
   await mkdir(dir, { recursive: true, mode: 0o700 })
-  const state = { runId: outputId, status: 'collecting_evidence', startedAt: new Date().toISOString(),
+  const state = { ...(prepared?.state || {}), runId: outputId, status: 'collecting_evidence', startedAt: prepared?.state?.startedAt || new Date().toISOString(),
     sourceRunId: args.source_run_id || null, projectId: args.project_id || null,
     ruleFingerprint: rules.fingerprint, loadedRules: rules.loaded, outlineSha256: sha256(JSON.stringify(outline)), ...actor(exec.agent) }
   let pendingWrite = Promise.resolve()
@@ -194,17 +195,21 @@ export async function assemble({ client, llm, args, exec }) {
   }
   await saveState()
   try {
-    const source = await sourceEvidence(exec.agent, args)
+    const source = prepared?.source || await sourceEvidence(exec.agent, args)
     const { evidence, gaps } = source
     state.projectId = source.projectId
+    // Read before prepare() writes its first snapshot. Reuse requires fresh permissions.
+    const archived = resume ? await readJson(path.join(dir, 'evidence.json'), { evidence: [] }) : { evidence: [] }
+    const overview = await readJson(path.join(runPath(exec.agent, args.plan_id), 'evidence.json'), { evidence: [] })
     const retrieval = await createRetrieval({ client, projectId: state.projectId, rules, outline,
-      audience: args.audience, evidence, dir, signal: exec.signal })
+      audience: args.audience, evidence, dir, signal: exec.signal, deferInitialFlush: true })
     await retrieval.prepare()
+    await retrieval.restoreEvidence([...overview.evidence, ...archived.evidence])
     state.retrieval = { status: retrieval.issues.length ? 'partial' : 'ready', mode: 'chapter-only' }
     await retrieval.flush()
     let generated
     try {
-      generated = await generateChapters({ llm, args, exec, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan: confirmed.document.plan })
+      generated = await generateChapters({ llm, args, exec, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan: confirmed.document.plan, resume })
     } finally { await retrieval.flush() }
     await writeJson(path.join(dir, 'evidence.json'), { evidence, coverage: retrieval.coverage, gaps,
       reviewItems: retrieval.issues })
@@ -227,7 +232,12 @@ export async function assemble({ client, llm, args, exec }) {
       reviewStatus: 'needs_human_review', generatedAt: new Date().toISOString() }
     await writeJson(path.join(dir, 'report.json'), report)
     await writeFile(path.join(dir, 'report.md'), reportText(report), { mode: 0o600 })
-    state.status = 'needs_human_review'; state.sections = report.sections.length; state.evidence = evidence.length
+    const missingChapters = flattenOutline(generated.outline).filter(node => !generatedKeys.has(node.key))
+    state.status = missingChapters.length ? 'partial_draft' : 'needs_human_review'
+    state.sections = report.sections.length; state.evidence = evidence.length
+    state.missingChapters = missingChapters.map(node => node.key)
+    state.reportPath = path.join(dir, 'report.md'); state.jsonPath = path.join(dir, 'report.json')
+    state.finishedAt = new Date().toISOString()
     await saveState()
     return { runId: outputId, status: state.status, sections: report.sections.length, evidence: evidence.length,
       choices: report.choices, planningStatus: state.planning.status, failedChapters: state.chapters.filter(item => item.status === 'failed').map(item => item.title),

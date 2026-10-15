@@ -1,11 +1,14 @@
 import { PlatformClient, resolveConfig } from './platform.js'
 import { parametersSchema } from './schema.js'
-import { ingest, status, assemble } from './workflow.js'
+import { ingest, status } from './workflow.js'
+import { createTaskService, observedTask } from './tasks.js'
+import { createRequire } from 'node:module'
 import { loadRules, validateOutline, requestedModes, applyModes, BUSINESS_MODES, TREND_FRAMEWORKS } from './rules.js'
 import { planOutline, confirmOutline } from './planning.js'
 
 export const name = 'wlyd-material-knowledge-assembly'
-export const inject = ['tools', 'llm', 'fs']
+export const inject = ['tools', 'llm', 'fs', 'jobs']
+const runtimeVersion = createRequire(import.meta.url)('../package.json').version
 const output = { schema: { type: 'object', additionalProperties: true, properties: {} },
   render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] }
 const card = (title, kind, rawInput = {}) => ({ card: 'generic', title, kind, rawInput })
@@ -22,7 +25,11 @@ const authorParameters = {
 
 export function apply(ctx, config = {}) {
   const client = new PlatformClient(resolveConfig(config))
-  const register = tool => ctx.tools.register({ ...tool, parameters: parametersSchema(tool.parameters) })
+  const tasks = ctx.jobs ? createTaskService({ jobs: ctx.jobs, client, llm: ctx.llm }) : null
+  if (tasks) ctx.effect?.(() => () => tasks.close())
+  ctx.logger?.info?.(`wlyd assembly ${runtimeVersion} contract=2 jobs=${Boolean(tasks)}`)
+  const register = tool => ctx.tools.register({ ...tool, parameters: parametersSchema(tool.parameters),
+    execute: async (args, exec) => ({ ...await tool.execute(args, exec), runtimeVersion, contractVersion: 2 }) })
 
   register({
     name: 'wlyd_assembly_projects',
@@ -52,7 +59,8 @@ export function apply(ctx, config = {}) {
     name: 'wlyd_assembly_status',
     description: '查看导入逐文件状态、大纲规划与确认状态，或生成运行的逐章提取/撰写/校验、全景补充及合稿必检进度。生成运行只读，不触发重新生成。',
     parameters: { run_id: { type: 'string', required: true } }, output,
-    execute: (args, exec) => status({ client, runId: args.run_id, agent: exec.agent, signal: exec.signal }),
+    execute: async (args, exec) => tasks ? tasks.query(args.run_id, exec)
+      : observedTask(await status({ client, runId: args.run_id, agent: exec.agent, signal: exec.signal })),
     presentCall: args => card('查看解析状态', 'read', { runId: args?.run_id }),
   })
 
@@ -64,6 +72,7 @@ export function apply(ctx, config = {}) {
       plan_id: { type: 'string' }, plan_sha256: { type: 'string' }, confirmed: { type: 'boolean' },
       template_id: { type: 'string' }, outline: { type: 'array', items: { type: 'object' } }, ...selectionParameters, ...authorParameters }, output,
     async execute(args, exec) {
+      if (args.action && !['preview', 'plan', 'confirm'].includes(args.action)) throw new Error('未知 outline action，请使用 preview、plan 或 confirm')
       if (args.action === 'plan') return planOutline({ client, llm: ctx.llm, args, exec })
       if (args.action === 'confirm') return confirmOutline({ args, exec })
       const rules = await loadRules(args.template_id || 'presales-solution')
@@ -78,10 +87,12 @@ export function apply(ctx, config = {}) {
 
   register({
     name: 'wlyd_assembly_generate',
-    description: '只使用已确认的大纲版本，所有章节并行进入定向取证、分批事实提取和撰写；模型请求默认八路。合稿必须逐段及跨章节核对问题方案、能力证据、场景全景、趋势建设和矛盾孤立内容，最多一轮局部修正再复查。检查未完成不能标通过。部分失败保留已有结果，不自动重跑整篇。',
+    description: '只使用已确认大纲，提交宿主管理的后台组稿并立即返回 runId；用 status 查询，禁止循环重复 generate。同材料目录默认复用已有运行。mode=resume 携 run_id 接续检查点；mode=regenerate 明确重新生成。所有章节并行定向取证、提取和撰写，实际请求默认八路并受模型路由限流。合稿必检前后关联、能力证据、全景及矛盾；未查完不能通过。进程关闭后任务停止，可显式恢复。',
     parameters: {
-      plan_id: { type: 'string', required: true, description: 'outline action=confirm 已确认的规划 ID' },
-      plan_sha256: { type: 'string', required: true, description: '已确认版本的 SHA-256，目录改变后需重新规划确认' },
+      mode: { type: 'string', enum: ['start', 'resume', 'regenerate'], description: '默认 start；resume 接续旧运行；regenerate 明确重做' },
+      run_id: { type: 'string', description: 'mode=resume 必填，使用原生成 runId；不能填导入或规划 ID' },
+      plan_id: { type: 'string', description: 'start/regenerate 必填：outline action=confirm 已确认的规划 ID' },
+      plan_sha256: { type: 'string', description: 'start/regenerate 必填：已确认版本 SHA-256；恢复默认读取原参数' },
       source_run_id: { type: 'string', description: '材料导入返回的 runId' },
       project_id: { type: 'string', description: '可访问的方案项目 ID' },
       template_id: { type: 'string', description: '方案模板，当前提供 presales-solution' },
@@ -89,8 +100,19 @@ export function apply(ctx, config = {}) {
       ...authorParameters,
       ...selectionParameters,
     }, output,
-    execute: (args, exec) => assemble({ client, llm: ctx.llm, args, exec }),
+    execute: (args, exec) => {
+      if (!tasks) throw new Error('DSH jobs 服务未注入，无法提交后台组稿；请完整重启新版插件')
+      return tasks.submit(args, exec)
+    },
     presentCall: args => card('生成有据售前报告', 'write', { sourceRunId: args?.source_run_id,
       projectId: args?.project_id, templateId: args?.template_id }),
+  })
+  register({ name: 'wlyd_assembly_cancel', description: '明确停止当前会话的后台组稿，保留已落盘检查点。停止完成后可用 generate mode=resume 接续。',
+    parameters: { run_id: { type: 'string', required: true } }, output,
+    execute: (args, exec) => {
+      if (!tasks) throw new Error('DSH jobs 服务不可用')
+      return tasks.cancel(args.run_id, exec)
+    },
+    presentCall: args => card('停止后台组稿', 'write', { runId: args?.run_id }),
   })
 }

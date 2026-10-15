@@ -1,9 +1,12 @@
-import { list, strings, evidenceBatches, checkedFacts, uniqueFacts, NON_REPEATABLE } from './context.js'
+import { list, strings, evidenceBatches, checkedFacts, uniqueFacts } from './context.js'
+import { classifyModelFailure } from './model.js'
+import { abortError } from './scheduler.js'
 
 /** Extract each evidence batch once; on resource limits split the failed batch only. */
-export async function collectFacts({ request, common, node, rule, evidence, plan, round = 0, onBatch = async () => {}, onProgress = async () => {} }) {
+export async function collectFacts({ request, common, node, rule, evidence, plan, signal, round = 0, onBatch = async () => {}, onProgress = async () => {} }) {
   const result = { facts: [], writingOutline: [], retrievalQueries: [], gaps: [], reviewItems: [], batches: [] }
   const visit = async (batch, batchId, depth = 0, retry = false) => {
+    if (signal?.aborted) throw abortError(signal)
     await onBatch()
     try {
       const raw = await request({ ...common, stage: 'extract', chapter: node, chapterRule: { extractQuestions: rule.extractQuestions || [] },
@@ -19,7 +22,10 @@ export async function collectFacts({ request, common, node, rule, evidence, plan
       result.batches.push({ batchId, status: 'completed', evidenceIds: [...new Set(batch.map(row => row.id))], facts: facts.length })
       await onProgress(result)
     } catch (error) {
-      if (NON_REPEATABLE.has(error.code) && depth < 2 && (batch.length > 1 || batch[0]?.content.length > 900)) {
+      if (signal?.aborted || error.name === 'AbortError') throw signal?.aborted ? abortError(signal) : error
+      const kind = classifyModelFailure(error)
+      const canSplit = kind === 'context' || kind === 'output' && error.outputCharacters > 0
+      if (canSplit && depth < 2 && (batch.length > 1 || batch[0]?.content.length > 900)) {
         result.batches.push({ batchId, status: 'split', error: error.message })
         let parts
         if (batch.length > 1) { const mid = Math.ceil(batch.length / 2); parts = [batch.slice(0, mid), batch.slice(mid)] }
@@ -29,7 +35,7 @@ export async function collectFacts({ request, common, node, rule, evidence, plan
             [{ ...source, content: source.content.slice(mid - 80), span: { start: offset + mid - 80, end: offset + source.content.length } }]]
         }
         for (const [index, part] of parts.entries()) await visit(part, `${batchId}.${index + 1}`, depth + 1)
-      } else if (!NON_REPEATABLE.has(error.code) && !retry) await visit(batch, `${batchId}-retry`, depth, true)
+      } else if (kind === 'other' && !error.code && !retry) await visit(batch, `${batchId}-retry`, depth, true)
       else throw error
     }
   }

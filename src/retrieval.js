@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { createLimiter } from './scheduler.js'
+import { atomicJson } from './persistence.js'
 
 const retrievalSlot = createLimiter(4)
 const hash = value => createHash('sha256').update(value).digest('hex')
@@ -111,7 +112,7 @@ function balanced(items, descriptors, limit) {
 }
 
 /** An in-run registry: original chunks stay complete; prompts receive a bounded, relevant subset. */
-export function createRetrieval({ client, projectId, evidence, dir, signal, rules, outline, audience }) {
+export function createRetrieval({ client, projectId, evidence, dir, signal, rules, outline, audience, deferInitialFlush = false }) {
   if (!Array.isArray(evidence)) throw new Error('evidence 必须是共享数组')
   const byId = new Map(evidence.map(item => [item.id, item]))
   const bySource = new Map()
@@ -131,6 +132,7 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
   const chapterSelection = new Map()
   const supplemented = new Set()
   let prepared
+  let restoring = deferInitialFlush
   let pendingWrite = Promise.resolve()
 
   const catalog = () => {
@@ -148,14 +150,14 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
   }
 
   const flush = () => {
-    if (!dir) return Promise.resolve()
+    if (!dir || restoring) return Promise.resolve()
     const snapshot = JSON.parse(JSON.stringify({ evidence, coverage }))
     const audit = JSON.parse(JSON.stringify({ queries: [...queries].sort((a, b) => a.queryId.localeCompare(b.queryId) || a.baseId.localeCompare(b.baseId)),
       issues, catalog: catalog(), evidenceCount: evidence.length }))
     const write = pendingWrite.then(async () => {
       await mkdir(dir, { recursive: true, mode: 0o700 })
-      await writeFile(path.join(dir, 'evidence.json'), JSON.stringify(snapshot, null, 2), { mode: 0o600 })
-      await writeFile(path.join(dir, 'retrieval.json'), JSON.stringify(audit, null, 2), { mode: 0o600 })
+      await atomicJson(path.join(dir, 'evidence.json'), snapshot)
+      await atomicJson(path.join(dir, 'retrieval.json'), audit)
     })
     pendingWrite = write.catch(() => {})
     return write
@@ -182,7 +184,7 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
         retrievalSlot(async () => {
           const docs = await client.documents(baseId, signal)
           if (!Array.isArray(docs)) throw new Error('知识文档列表响应异常')
-          return { baseId, docs: docs.filter(doc => doc?.parse_status === 'completed' && doc.id) }
+          return { baseId, docs: docs.filter(doc => doc?.parse_status === 'completed' && doc.id && !doc.deleted_at) }
         }, signal)))
       for (const [index, result] of results.entries()) {
         const baseId = unique(bases.map(String))[index]
@@ -232,6 +234,25 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
     }
     hitIdsByBase.get(baseId)?.add(item.id)
     return item
+  }
+
+  const restoreEvidence = async archived => {
+    await prepare()
+    for (const row of archived || []) {
+      if (row.kind !== 'knowledge') {
+        const original = byId.get(row.id)
+        if (!original || original.content !== row.content) throw new Error('归档材料证据与当前导入不一致，不能恢复')
+        continue
+      }
+      const allowed = (docsByBase.get(row.knowledgeBaseId) || []).some(doc => String(doc.id) === row.knowledgeId)
+      const key = JSON.stringify([row.knowledgeBaseId, row.knowledgeId, row.chunkId, hash(row.content || '')])
+      if (!allowed || row.id !== `K${hash(key).slice(0, 24)}`) throw new Error('归档知识证据无法通过当前项目权限、文档状态或内容校验；请重新规划生成')
+      const existing = byId.get(row.id)
+      if (existing && existing.content !== row.content) throw new Error('证据 ID 内容冲突，不能恢复')
+      if (!existing) { evidence.push(row); byId.set(row.id, row); bySource.set(key, row) }
+    }
+    restoring = false
+    await flush()
   }
 
   const runQueries = async descriptors => {
@@ -372,10 +393,10 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
     if (dir) {
       const chapterDir = path.join(dir, 'chapters', node.key)
       await mkdir(chapterDir, { recursive: true, mode: 0o700 })
-      await writeFile(path.join(chapterDir, 'retrieval.json'), JSON.stringify({
+      await atomicJson(path.join(chapterDir, 'retrieval.json'), {
         chapterKey: node.key, roleId: node.roleId, evidenceIds: chosen.map(item => item.id),
         queries: chapterQueriesLog, localSelected: fromLocal.map(item => item.id), planAnchors: anchors.map(item => item.id),
-      }, null, 2), { mode: 0o600 })
+      })
     }
     await flush()
     return chosen
@@ -419,5 +440,5 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
     return [...selected].map(id => byId.get(id)).filter(Boolean)
   }
 
-  return { prepare, discover, forChapter, selectForSections, catalog, flush, coverage, issues, evidence }
+  return { prepare, restoreEvidence, discover, forChapter, selectForSections, catalog, flush, coverage, issues, evidence }
 }

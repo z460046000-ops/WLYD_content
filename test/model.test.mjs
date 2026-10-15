@@ -4,8 +4,8 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { askModel, resolveModelSelection, resolveQueueTimeoutMs, resolveStageTimeoutMs } from '../src/model.js'
-import { createLimiter } from '../src/scheduler.js'
+import { askModel, resolveModelSelection, resolveQueueTimeoutMs, resolveStageTimeoutMs, resolveWritingModel, stageOutputBudget, classifyModelFailure } from '../src/model.js'
+import { createLimiter, createModelScheduler, resolveRouteConcurrency } from '../src/scheduler.js'
 
 const agent = { options: { provider: 'fake', model: 'fake', reasoningEffort: 'high' } }
 const answer = { async *stream(request) {
@@ -93,7 +93,10 @@ test('实测排队、首思考/正文与供应商 usage；回调异常不影响�
     { timeoutMs: 1000, queueTimeoutMs: 1000, onMetrics: () => { throw new Error('observability unavailable') } }), { ok: true })
 })
 
-test('排队超时单独计时，不发起模型请求，也不误记模型执行时长', async () => {
+test('排队超时单独计时，不发起模型请求，也不误记模型执行时长', async t => {
+  // AbortSignal.timeout is unref'ed on Node 22; the real DSH server keeps the event loop alive.
+  const keepAlive = setInterval(() => {}, 1000)
+  t.after(() => clearInterval(keepAlive))
   const limiter = createLimiter(1)
   let release
   const occupied = limiter(() => new Promise(resolve => { release = resolve }))
@@ -147,4 +150,97 @@ test('调用方取消保持原错误且观测回调执行', async () => {
   await rejection
   assert.ok(metrics.finishedAt)
   assert.equal(metrics.timeoutKind, null)
+})
+
+test('默认输出预算沿用模型路由；显式配置可高于元数据默认值', async () => {
+  assert.equal(stageOutputBudget('extract', { defaultMaxTokens: 3072 }, {}), undefined)
+  const env = { WLYD_ASSEMBLY_OUTPUT_BUDGETS: '{"default":8192,"write":16000,"fake/fake":{"extract":12000}}' }
+  assert.equal(stageOutputBudget('extract', { provider: 'fake', model: 'fake', defaultMaxTokens: 3072 }, env), 12000)
+  assert.equal(stageOutputBudget('write', {}, env), 16000)
+  assert.equal(stageOutputBudget('plan', {}, env), 8192)
+  assert.equal(stageOutputBudget('extract', {}, { WLYD_ASSEMBLY_OUTPUT_BUDGETS: '{"extract":0}' }), undefined)
+  let request
+  await askModel({ async *stream(value) {
+    request = value; yield { type: 'text-delta', text: '{}' }; yield { type: 'finish', reason: { kind: 'stop' } }
+  } }, agent, undefined, { stage: 'extract' })
+  assert.equal(Object.hasOwn(request, 'maxTokens'), false)
+  const selection = await resolveWritingModel({ resolveModelInfo: async () => ({ defaultMaxTokens: 65536,
+    reasoning: { efforts: [{ id: 'high' }, { id: 'low' }], defaultEffort: 'high' } }) }, agent)
+  assert.deepEqual(selection.supportedReasoningEfforts, ['high', 'low'])
+  assert.equal(selection.defaultReasoningEffort, 'high')
+  assert.equal(selection.reasoningEffort, 'low')
+  assert.equal(selection.defaultMaxTokens, 65536)
+})
+
+test('路由并发先于总槽；拥挤路由不会挡住另一个路由', async () => {
+  const env = { WLYD_ASSEMBLY_CONCURRENCY: '2', WLYD_ASSEMBLY_ROUTE_CONCURRENCY: '{"fake/a":1,"fake/*":2,"default":1}' }
+  assert.equal(resolveRouteConcurrency({ provider: 'fake', model: 'a' }, env), 1)
+  assert.equal(resolveRouteConcurrency({ provider: 'fake', model: 'b' }, env), 2)
+  assert.equal(resolveRouteConcurrency({ provider: 'other', model: 'a' }, env), 1)
+  const scheduler = createModelScheduler({ globalLimiter: createLimiter(2), env })
+  let release, aRuns = 0
+  const first = scheduler({ provider: 'fake', model: 'a' }, () => new Promise(resolve => { aRuns++; release = resolve }))
+  await delay(0)
+  const second = scheduler({ provider: 'fake', model: 'a' }, () => { aRuns++; return 'second' })
+  const independent = await scheduler({ provider: 'other', model: 'b' }, () => 'independent')
+  assert.equal(independent, 'independent')
+  assert.equal(aRuns, 1)
+  release(); await first; await second
+  assert.equal(aRuns, 2)
+})
+
+test('429最多退避两次，保存结构化failure，退避释放模型槽', async () => {
+  const scheduler = createModelScheduler({ globalLimiter: createLimiter(1), env: { WLYD_ASSEMBLY_CONCURRENCY: '1' } })
+  let calls = 0, metrics
+  const sleeps = []
+  const result = await askModel({ async *stream() {
+    calls++
+    if (calls < 3) yield { type: 'finish', reason: { kind: 'error', failure: {
+      code: 'RATE_LIMIT', status: 429, providerRetryAfterMs: 1200, requestId: `request-${calls}`, message: 'busy' } } }
+    else { yield { type: 'text-delta', text: '{}' }; yield { type: 'finish', reason: { kind: 'stop' } } }
+  } }, agent, undefined, { stage: 'write' }, { scheduler, random: () => 0,
+    sleep: async ms => {
+      sleeps.push(ms)
+      // This would hang if the failing request retained the route/global slot.
+      await scheduler({ provider: 'fake', model: 'fake' }, async () => 'slot-released')
+    }, onMetrics: value => { metrics = value } })
+  assert.deepEqual(result, {})
+  assert.deepEqual(sleeps, [1200, 2000])
+  assert.equal(calls, 3)
+  assert.equal(metrics.attempts, 3)
+  assert.equal(metrics.rateLimitCount, 2)
+  assert.equal(metrics.attemptDetails[0].failure.requestId, 'request-1')
+  assert.equal(metrics.attemptDetails[0].failure.providerRetryAfterMs, 1200)
+  assert.equal(metrics.failure, null)
+})
+
+test('持续429第三次失败；AUTH和QUOTA不会误判上下文或重试', async () => {
+  for (const failure of [
+    { code: 'RATE_LIMIT', status: 429, message: 'context window tokens limit' },
+    { code: 'AUTH', status: 401, message: 'token limit invalid' },
+    { code: 'QUOTA_EXCEEDED', status: 429, message: 'maximum token quota' },
+  ]) {
+    let calls = 0, metrics
+    await assert.rejects(askModel({ async *stream() {
+      calls++; yield { type: 'finish', reason: { kind: 'error', failure } }
+    } }, agent, undefined, { stage: 'extract' }, { random: () => 0, sleep: async () => {}, onMetrics: value => { metrics = value } }),
+    error => error.code === failure.code && error.failure.code === failure.code && error.failure.status === failure.status)
+    assert.equal(calls, failure.code === 'RATE_LIMIT' ? 3 : 1)
+    assert.equal(metrics.failure.code, failure.code)
+  }
+  assert.equal(classifyModelFailure(Object.assign(new Error('maximum output token limit'), { code: 'MODEL_OUTPUT_LIMIT' })), 'output')
+  assert.equal(classifyModelFailure(Object.assign(new Error('context exceeded'), { code: 'CONTEXT_WINDOW_EXCEEDED' })), 'context')
+  assert.equal(classifyModelFailure(new Error('maximum tokens limit')), 'other')
+})
+
+test('退避可及时取消，不再发请求', async () => {
+  const controller = new AbortController()
+  let calls = 0, metrics
+  const pending = askModel({ async *stream() {
+    calls++; yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', status: 429, message: 'busy' } } }
+  } }, agent, controller.signal, { stage: 'write' }, { random: () => 0, onMetrics: value => { metrics = value } })
+  const rejected = assert.rejects(pending, /停止退避/u)
+  await delay(10); controller.abort(new Error('停止退避')); await rejected
+  assert.equal(calls, 1)
+  assert.ok(metrics.backoffMs < 500)
 })
