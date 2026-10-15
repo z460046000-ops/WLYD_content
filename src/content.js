@@ -108,4 +108,3 @@ export function validateDraft(draft, evidence, outline, plan = {}) {
   }
   return { sections, issues, assemblyLinks, reviewItems: [...new Set(reviewItems)] }
 }
-
