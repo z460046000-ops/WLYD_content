@@ -87,8 +87,7 @@ test('逐章只取相关片段与指定共享锚点，完整证据存档且来�
     capabilityIds: ['cap-1'], problemIds: [], trendIds: [], scenarioIds: [] }],
   capabilities: [{ id: 'cap-1', evidence: [{ id: firstId, quote: 'CallWan 支持知识检索' }] }] }
   const chapter = await retrieval.forChapter({ key: 'sales', roleId: 'business-challenges', title: '销售挑战' }, plan)
-  assert.ok(chapter.some(item => item.id === 'M1-1'))
-  assert.ok(chapter.some(item => item.id === 'M1-2'))
+  assert.ok(!chapter.some(item => item.kind === 'material'))
   assert.ok(chapter.some(item => item.chunkId === 'C2'))
   assert.ok(!chapter.some(item => item.id === 'M3-1'))
   assert.ok(!evidence.some(item => item.knowledgeId === 'D2'))

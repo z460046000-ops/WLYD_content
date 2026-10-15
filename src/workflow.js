@@ -2,7 +2,9 @@ import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { convertFile, MAX_BYTES } from './convert.js'
-import { loadRules, validateOutline, flattenOutline, requestedModes } from './rules.js'
+import { flattenOutline } from './rules.js'
+import { confirmedPlan } from './planning.js'
+import { sourceEvidence, runPath } from './store.js'
 import { generateChapters } from './generation.js'
 import { reportText } from './content.js'
 import { createRetrieval } from './retrieval.js'
@@ -10,11 +12,6 @@ export { validateDraft } from './content.js'
 
 const sha256 = value => createHash('sha256').update(value).digest('hex')
 const writeJson = (file, value) => writeFile(file, JSON.stringify(value, null, 2), { mode: 0o600 })
-const rootOf = agent => path.join(agent?.session?.header?.cwd || process.cwd(), 'artifacts/material-knowledge-assembly/runs')
-const runPath = (agent, runId) => {
-  if (!/^[0-9a-f-]{36}$/iu.test(runId)) throw new Error('无效的 run_id')
-  return path.join(rootOf(agent), runId)
-}
 const safeName = name => path.basename(String(name)).replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 100) || 'material'
 const attachmentKey = value => /^[a-f0-9]{64}$/u.test(String(value)) ? `sha256:${value}` : String(value)
 const deepClone = value => JSON.parse(JSON.stringify(value))
@@ -166,21 +163,6 @@ export async function status({ client, runId, agent, signal }) {
   return state
 }
 
-function localEvidence(text, file) {
-  const pieces = text.split(/\n\s*\n/gu).map(item => item.trim()).filter(Boolean)
-  const result = []
-  let current = ''
-  for (const piece of pieces) {
-    if (current && current.length + piece.length > 1400) { result.push(current); current = '' }
-    if (piece.length > 1400) {
-      for (let pos = 0; pos < piece.length; pos += 1400) result.push(piece.slice(pos, pos + 1400))
-    } else current += (current ? '\n\n' : '') + piece
-  }
-  if (current) result.push(current)
-  return result.map((content, index) => ({ id: `M${file.index}-${index + 1}`,
-    kind: 'material', source: file.name, sourceSha256: file.contentSha256 || file.sha256 || null, locator: `${file.materialPath}#${index + 1}`, content }))
-}
-
 /** Compatibility entry for discovery; generation owns chapter-specific retrieval. */
 export async function retrieve(client, projectId, rules, signal) {
   const evidence = []
@@ -192,9 +174,10 @@ export async function retrieve(client, projectId, rules, signal) {
 
 
 export async function assemble({ client, llm, args, exec }) {
-  const rules = await loadRules(args.template_id || 'presales-solution')
-  const outline = validateOutline(args.outline ? deepClone(args.outline) : deepClone(rules.template.sections), rules)
-  requestedModes(outline, args)
+  const confirmed = await confirmedPlan({ args, exec })
+  const rules = confirmed.rules
+  args = confirmed.args
+  const outline = deepClone(confirmed.document.outline)
   const outputId = randomUUID()
   const dir = runPath(exec.agent, outputId)
   await mkdir(dir, { recursive: true, mode: 0o700 })
@@ -211,36 +194,17 @@ export async function assemble({ client, llm, args, exec }) {
   }
   await saveState()
   try {
-    const evidence = []
-    const gaps = []
-    if (args.source_run_id) {
-      const sourceDir = runPath(exec.agent, args.source_run_id)
-      const sourceState = JSON.parse(await readFile(path.join(sourceDir, 'run.json'), 'utf8'))
-      if (sourceState.projectId && state.projectId && String(sourceState.projectId) !== String(state.projectId)) {
-        throw new Error('材料所属项目与生成项目不一致，已阻止跨项目混用')
-      }
-      for (const [index, file] of sourceState.files.entries()) {
-        if (file.status !== 'converted') { gaps.push(`${file.name}：${file.reason || file.status}`); continue }
-        if (!/^materials\/[\p{L}\p{N}._-]+\.md$/u.test(file.materialPath) || file.materialPath.includes('..')) {
-          gaps.push(`${file.name}：材料路径不合法`); continue
-        }
-        const text = await readFile(path.join(sourceDir, file.materialPath), 'utf8')
-        evidence.push(...localEvidence(text, { ...file, index: index + 1 }))
-      }
-      if (!state.projectId && sourceState.projectId) state.projectId = sourceState.projectId
-    }
+    const source = await sourceEvidence(exec.agent, args)
+    const { evidence, gaps } = source
+    state.projectId = source.projectId
     const retrieval = await createRetrieval({ client, projectId: state.projectId, rules, outline,
       audience: args.audience, evidence, dir, signal: exec.signal })
     await retrieval.prepare()
-    const planningEvidence = await retrieval.discover()
-    state.retrieval = { status: retrieval.issues.length ? 'partial' : 'ready', planningEvidenceCount: planningEvidence.length }
-    if (!evidence.length && !retrieval.coverage.some(item => item.completedDocuments > 0)) {
-      throw new Error('没有可核对的材料或授权知识片段，未生成空稿')
-    }
+    state.retrieval = { status: retrieval.issues.length ? 'partial' : 'ready', mode: 'chapter-only' }
     await retrieval.flush()
     let generated
     try {
-      generated = await generateChapters({ llm, args, exec, rules, outline, evidence, dir, state, saveState, retrieval, planningEvidence })
+      generated = await generateChapters({ llm, args, exec, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan: confirmed.document.plan })
     } finally { await retrieval.flush() }
     await writeJson(path.join(dir, 'evidence.json'), { evidence, coverage: retrieval.coverage, gaps,
       reviewItems: retrieval.issues })
@@ -252,11 +216,12 @@ export async function assemble({ client, llm, args, exec }) {
       ? '产品售前解决方案' : proposedTitle
     const generatedKeys = new Set(generated.sections.map(item => item.key))
     const requiredGaps = flattenOutline(generated.outline).filter(item => item.required && !generatedKeys.has(item.key))
-      .map(item => `${item.title}：缺少足够资料，需补充或确认`)
+      .map(item => `${item.title}：必需章节未成稿，原因见逐章运行记录`)
     const report = { schemaVersion: 2, runId: outputId, title,
       templateId: rules.template.id, outline: generated.outline, sections: generated.sections,
       choices: generated.choices, contentBalance: generated.contentBalance, validationIssues: generated.validationIssues,
-      assemblyLinks: generated.assemblyLinks, reviewItems: generated.reviewItems,
+      assemblyLinks: generated.assemblyLinks, reviewItems: generated.reviewItems, assemblyReview: generated.review,
+      confirmedPlan: { planId: args.plan_id, sha256: args.plan_sha256 },
       gaps: [...new Set([...gaps, ...requiredGaps, ...generated.gaps])],
       evidenceIds: evidence.map(item => item.id), ruleFingerprint: rules.fingerprint, loadedRules: rules.loaded,
       reviewStatus: 'needs_human_review', generatedAt: new Date().toISOString() }
@@ -266,7 +231,7 @@ export async function assemble({ client, llm, args, exec }) {
     await saveState()
     return { runId: outputId, status: state.status, sections: report.sections.length, evidence: evidence.length,
       choices: report.choices, planningStatus: state.planning.status, failedChapters: state.chapters.filter(item => item.status === 'failed').map(item => item.title),
-      reviewItemsCount: report.reviewItems.length, gapsCount: report.gaps.length,
+      assemblyReview: report.assemblyReview, reviewItemsCount: report.reviewItems.length, gapsCount: report.gaps.length,
       reportPath: path.join(dir, 'report.md'), jsonPath: path.join(dir, 'report.json'), evidencePath: path.join(dir, 'evidence.json'), retrievalPath: path.join(dir, 'retrieval.json') }
   } catch (error) { state.status = exec.signal?.aborted ? 'cancelled' : 'failed'; state.error = error.message; throw error }
   finally { await saveState() }

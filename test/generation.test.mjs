@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { assembleConfirmed, completeAudit } from './helpers.mjs'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -29,7 +30,7 @@ const blockFor = chapter => ({ id: `${chapter.key}-7`, text: '可考虑以统一
 const answerFor = prompt => prompt.stage === 'plan' ? plan
   : prompt.stage === 'extract' ? { facts: [{ text: evidence[0].content, evidence: [ref] }], writingOutline: [] }
   : prompt.stage === 'panorama-enrichment' ? { additions: [], reviewItems: [] }
-  : prompt.stage === 'consistency-review' ? { reviewItems: ['请业务负责人核对场景适用性'] }
+  : prompt.stage === 'consistency-review' ? completeAudit(['请业务负责人核对场景适用性'])
   : { sections: [{ key: prompt.chapter.key, blocks: [blockFor(prompt.chapter)] }], gaps: ['对应关系待核对'] }
 function fakeModel(handle = answerFor) {
   return { async *stream(request) {
@@ -45,6 +46,8 @@ async function fixture(llm, args = {}, signal = new AbortController().signal) {
   const snapshots = []
   const options = { llm, exec: { agent, signal }, args, rules, outline: rules.template.sections, evidence, dir, state,
     saveState: async () => { snapshots.push(structuredClone(state)) } }
+  options.acceptedPlan = normalizePlan(plan, evidence, options.outline, args)
+  options.outline = applyPlanTitles(applyModes(options.outline, { businessMode: options.acceptedPlan.choices.businessMode.value, trendFramework: options.acceptedPlan.choices.trendFramework.value }), options.acceptedPlan, evidence)
   return { options, snapshots, dir, state }
 }
 
@@ -53,7 +56,7 @@ test('八条章节流水线共享规划、原文与模型额度，乱序完成�
   const calls = []
   const f = await fixture(fakeModel(async prompt => {
     calls.push({ stage: prompt.stage, key: prompt.chapter?.key })
-    assert.deepEqual(prompt.evidence, evidence)
+    assert.ok(prompt.evidence.every(row => evidence.some(source => source.id === row.id)))
     active++; peak = Math.max(peak, active)
     try {
       await delay(prompt.chapter?.key === 'policy-trends' ? 20 : 4)
@@ -71,7 +74,8 @@ test('八条章节流水线共享规划、原文与模型额度，乱序完成�
   }), { business_mode: 'current-state', trend_framework: 'pest' })
   const result = await generateChapters(f.options)
   assert.equal(peak, 8)
-  assert.equal(calls[0].stage, 'plan')
+  assert.equal(calls[0].stage, 'extract')
+  assert.ok(!calls.some(call => call.stage === 'plan'))
   assert.equal(calls.at(-1).stage, 'consistency-review')
   const nodes = flattenOutline(f.options.outline)
   assert.deepEqual(result.sections.map(s => s.key), nodes.map(n => n.key))
@@ -81,14 +85,14 @@ test('八条章节流水线共享规划、原文与模型额度，乱序完成�
     assert.equal(stages.filter(s => s === 'extract').length, node.key === 'technical-platform' ? 2 : 1)
     assert.equal(stages.filter(s => s === 'write').length, node.key === 'solution' ? 2 : 1)
     const file = JSON.parse(await readFile(path.join(f.dir, 'chapters', node.key, 'chapter.json'), 'utf8'))
-    assert.equal(file.section.blocks[0].id, `${node.key}-7`)
+    assert.equal(file.section.blocks[0].id, `${node.key}-1`)
   }
   assert.equal(result.sections[1].title, '业务运行情况')
   assert.equal(result.outline[1].canonicalTitle, '业务现状')
   assert.equal(result.assemblyLinks.length, 1)
-  assert.equal(result.assemblyLinks[0].scenarioBlockId, 'scenarios-7')
-  assert.equal(result.assemblyLinks[0].challengeBlockId, 'business-challenges-7')
-  assert.equal(result.assemblyLinks[0].trendBlockId, 'policy-trends-7')
+  assert.equal(result.assemblyLinks[0].scenarioBlockId, 'scenarios-1')
+  assert.equal(result.assemblyLinks[0].challengeBlockId, 'business-challenges-1')
+  assert.equal(result.assemblyLinks[0].trendBlockId, 'policy-trends-1')
   assert.ok(!result.gaps.some(gap => gap.includes('对应关系')))
   assert.ok(result.reviewItems.includes('请业务负责人核对场景适用性'))
   assert.ok(f.state.chapters.every(c => c.status === 'completed'))
@@ -142,7 +146,7 @@ test('上下文超限不重复同一章节请求，运行记录保留阶段和�
   } })
   await assert.rejects(generateChapters(f.options), /全部章节未完成.*上下文超限/u)
   assert.ok(f.state.chapters.every(c => c.extractAttempts === 1 && c.writeAttempts === 0))
-  assert.equal(f.state.modelRequests.length, 1 + flattenOutline(f.options.outline).length)
+  assert.equal(f.state.modelRequests.length, flattenOutline(f.options.outline).length)
   assert.ok(f.state.modelRequests.every(r => r.code === 'MODEL_CONTEXT_LIMIT' && r.inputCharacters > 0 && r.finishedAt))
   assert.ok(f.state.modelRequests.every(r => r.evidenceCharacters === evidence[0].content.length))
 })
@@ -165,16 +169,18 @@ test('取消保留已完成章，停止启动排队章；生成状态查询不�
       controller.abort(new Error('用户取消'))
     }
     await delay(prompt.chapter?.key === 'policy-trends' ? 1 : 10, undefined, { signal })
+    if (prompt.stage === 'extract') return { facts: prompt.evidence.map(source => ({ text: source.content, evidence: [{ id: source.id, quote: source.content }] })), writingOutline: [] }
     return answerFor(prompt)
   })
-  await assert.rejects(assemble({ client, llm, args: { project_id: 'P1', outline }, exec: { agent: runningAgent, signal: controller.signal } }), /用户取消|aborted/u)
+  await assert.rejects(assembleConfirmed({ client, llm, args: { project_id: 'P1', outline }, exec: { agent: runningAgent, signal: controller.signal } }), /用户取消|aborted/u)
   const root = path.join(cwd, 'artifacts/material-knowledge-assembly/runs')
-  const [runId] = await readdir(root)
+  const runs = await readdir(root)
+  const runId = (await Promise.all(runs.map(async id => ({ id, state: JSON.parse(await readFile(path.join(root, id, 'run.json'), 'utf8')) })))).find(row => row.state.kind !== 'outline-plan').id
   const before = await readFile(path.join(root, runId, 'run.json'), 'utf8')
   const state = JSON.parse(before)
   assert.equal(state.status, 'cancelled')
   assert.ok(state.chapters.some(c => c.status === 'completed'))
-  assert.ok(state.chapters.some(c => c.status === 'cancelled' && c.extractAttempts === 0))
+  assert.ok(state.chapters.some(c => c.status === 'cancelled'))
   const completed = state.chapters.find(c => c.status === 'completed')
   assert.ok(await readFile(path.join(root, runId, completed.path), 'utf8'))
   assert.equal((await status({ client, runId, agent: runningAgent })).status, 'cancelled')
@@ -245,7 +251,7 @@ test('每章拿自己的证据；具体缺项只补一轮，新增原文进入�
     if (prompt.stage === 'extract') return { facts: prompt.evidence.map(source => ({
       text: source.content, evidence: [{ id: source.id, quote: source.content }],
     })), writingOutline: [], retrievalQueries: prompt.chapter.key === 'sales' ? ['销售转交如何确认'] : [] }
-    if (prompt.stage === 'consistency-review') return { reviewItems: [] }
+    if (prompt.stage === 'consistency-review') return completeAudit()
     assert.equal(prompt.stage, 'write')
     return { sections: [{ key: prompt.chapter.key, blocks: prompt.evidence.map((source, i) => ({
       id: `${prompt.chapter.key}-${i + 1}`, text: source.content, supportMode: 'sourced',
@@ -267,6 +273,7 @@ test('每章拿自己的证据；具体缺项只补一轮，新增原文进入�
   }
   const result = await generateChapters(f.options)
   assert.equal(calls.filter(call => call.queries.length).length, 1)
+  assert.deepEqual(supplied.filter(prompt => prompt.stage === 'extract' && prompt.retrievalRound).flatMap(prompt => prompt.evidence.map(source => source.id)), ['C'])
   assert.equal(f.state.chapters.find(chapter => chapter.key === 'sales').supplementRounds, 1)
   const sales = supplied.find(prompt => prompt.stage === 'write' && prompt.chapter.key === 'sales')
   assert.deepEqual(sales.evidence.map(source => source.id), ['A', 'C'])
@@ -274,7 +281,7 @@ test('每章拿自己的证据；具体缺项只补一轮，新增原文进入�
   assert.deepEqual(finance.evidence.map(source => source.id), ['B'])
   assert.ok(!supplied.some(prompt => prompt.evidence.some(source => source.id === 'N')))
   assert.equal(result.sections.length, 2)
-  assert.deepEqual(new Set(supplied.at(-1).evidence.map(source => source.id)), new Set(['A', 'B', 'C']))
+  assert.deepEqual(new Set(supplied.filter(prompt => prompt.stage === 'consistency-review').flatMap(prompt => prompt.evidence.map(source => source.id))), new Set(['A', 'B', 'C']))
   for (const [i, record] of f.state.modelRequests.entries()) {
     assert.equal(record.evidenceCharacters, supplied[i].evidence.reduce((sum, source) => sum + source.content.length, 0))
     assert.equal(record.inputBytes, Buffer.byteLength(JSON.stringify(supplied[i])))
@@ -283,7 +290,7 @@ test('每章拿自己的证据；具体缺项只补一轮，新增原文进入�
   }
 })
 
-test('补充提取失败仍保留首次事实；共享规划失败明确降级，其他章继续', async () => {
+test('补充提取失败仍保留首次事实；正文只复用确认规划，其他章继续', async () => {
   const f = await fixture(fakeModel(prompt => {
     if (prompt.stage === 'plan') throw new Error('plan unavailable')
     if (prompt.stage === 'extract' && prompt.retrievalRound) throw new Error('supplement unavailable')
@@ -298,28 +305,28 @@ test('补充提取失败仍保留首次事实；共享规划失败明确降级�
     forChapter: async (_node, _plan, queries = []) => queries.length ? [extra] : evidence,
     selectForSections: () => evidence }
   const result = await generateChapters(f.options)
-  assert.equal(f.state.planning.status, 'degraded')
-  assert.match(f.state.planning.error, /plan unavailable/u)
+  assert.equal(f.state.planning.status, 'confirmed')
+  assert.ok(!f.state.modelRequests.some(row => row.stage === 'plan'))
   assert.equal(result.sections.length, 9)
   assert.ok(result.reviewItems.some(item => item.includes('supplement unavailable')))
   assert.ok(f.state.chapters.every(chapter => chapter.supplementRounds === 1))
 })
 
-test('整稿复核超上下文后按章与场景关系拆分，保留完整正文不截断', async () => {
+test('合稿默认分章与关联检查，失败不能标为通过，不发送整稿大上下文', async () => {
   const calls = []
   const f = await fixture(fakeModel(prompt => {
     if (prompt.stage === 'consistency-review') {
       calls.push(prompt)
-      if (prompt.reviewScope === 'whole-report') throw Object.assign(new Error('maximum context length exceeded'), { code: 'context_length_exceeded' })
+      if (prompt.reviewScope.startsWith('relationship:')) throw Object.assign(new Error('maximum context length exceeded'), { code: 'context_length_exceeded' })
     }
     return answerFor(prompt)
   }))
   const result = await generateChapters(f.options)
-  assert.equal(calls.filter(prompt => prompt.reviewScope === 'whole-report').length, 1)
+  assert.ok(!calls.some(prompt => prompt.reviewScope === 'whole-report'))
   assert.equal(calls.filter(prompt => prompt.reviewScope.startsWith('chapter:')).length, 9)
   assert.ok(calls.some(prompt => prompt.reviewScope.startsWith('relationship:')))
-  const chapterReview = calls.filter(prompt => prompt.reviewScope.startsWith('chapter:')).flatMap(prompt => prompt.sections)
-  assert.deepEqual(chapterReview, result.sections)
-  assert.equal(f.state.review.mode, 'split')
-  assert.equal(f.state.review.status, 'completed')
+  assert.equal(result.sections.length, 9)
+  assert.equal(f.state.review.status, 'partial')
+  assert.equal(f.state.review.passed, false)
+  assert.ok(result.reviewItems.some(item => item.includes('合稿检查未完成')))
 })

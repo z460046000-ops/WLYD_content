@@ -48,6 +48,11 @@ export async function enrichPanoramas({ request, common, plan, outline, rules, c
       section.blocks.some(block => list(block.evidence).some(ref => ref.id === item.id)
         || list(block.planRefs?.capabilityIds).some(id => plan.capabilities.some(cap => cap.id === id && cap.evidence.some(ref => ref.id === item.id))))))
     const ids = new Set(selected.map(item => item.id))
+    if (JSON.stringify(relevantSections).length + JSON.stringify(selected).length > 12000) {
+      Object.assign(progress, { status: 'skipped', reason: '全景补充输入较大，交由分组关联检查和局部修正处理' })
+      reviewItems.push(progress.reason)
+      return result
+    }
     const scopedPlan = { ...plan, ...Object.fromEntries(['capabilities', 'problems', 'trends'].map(field => [field,
       list(plan[field]).map(item => ({ ...item, evidence: list(item.evidence).filter(ref => ids.has(ref.id)) })),
     ])) }

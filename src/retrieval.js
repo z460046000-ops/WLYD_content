@@ -333,13 +333,13 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
     return [...indices].sort((a, b) => a - b).map(index => local[index])
   }
 
-  const discover = async () => {
+  const discover = async ({ light = false, context = '' } = {}) => {
     await prepare()
     const descriptors = [
-      { query: '本项目产品能力、功能模块、状态归属、适用边界与典型业务场景', purpose: 'discovery' },
+      { query: `${context ? context + '；' : ''}本项目产品能力、功能模块、状态归属、适用边界与典型业务场景`, purpose: 'discovery' },
       { query: '本项目客户业务问题、行业趋势、客户合作案例与企业介绍', purpose: 'discovery' },
     ]
-    const found = balanced(await runQueries(descriptors), descriptors, 16)
+    const found = balanced(await runQueries(light ? descriptors.slice(0, 1) : descriptors), descriptors, light ? 4 : 16)
     const fromLocal = localFor(descriptors.map(item => item.query), 16)
     const localDocs = new Map()
     for (const item of local) {
@@ -349,7 +349,7 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
     for (const item of [...localDocs.values()].slice(0, 12)) if (!fromLocal.includes(item)) fromLocal.push(item)
     const selected = unique([...fromLocal, ...found].map(item => item.id)).map(id => byId.get(id))
     await flush()
-    return selected
+    return light ? (found.length ? found : fromLocal).slice(0, 4) : selected
   }
 
   const forChapter = async (node, plan, extraQueries = []) => {
@@ -358,16 +358,14 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
     if (extraQueries.length && supplemented.has(node.key)) return chapterSelection.get(node.key) || []
     if (extraQueries.length) supplemented.add(node.key)
     const descriptors = chapterQueries(node, plan, rules, audience, extraQueries)
-    const found = balanced(await runQueries(descriptors), descriptors, 16)
+    const found = balanced(await runQueries(descriptors), descriptors, 8)
     const terms = descriptors.map(item => item.query)
-    const fromLocal = localFor(terms)
-    const searchTerms = termsOf(terms.join('；'))
-    const relatedFound = [...evidence].filter(item => item.kind === 'knowledge' && score(item, searchTerms) > 0)
-      .sort((a, b) => score(b, searchTerms) - score(a, searchTerms)).slice(0, 4)
+    // Remote hits already cover uploaded documents; do not append broad local copies to every chapter.
+    const fromLocal = found.length ? [] : localFor(terms, 4)
     const guidance = guidanceFor(plan, node.key)
     const anchorIds = planEvidenceIds(plan, guidance)
     const anchors = anchorIds.map(id => byId.get(id)).filter(Boolean)
-    const chosen = unique([...(chapterSelection.get(node.key) || []), ...fromLocal, ...anchors, ...found, ...relatedFound]
+    const chosen = unique([...found, ...fromLocal, ...anchors]
       .map(item => item.id)).map(id => byId.get(id))
     chapterSelection.set(node.key, chosen)
     const chapterQueriesLog = queries.filter(item => item.chapterKey === node.key)
