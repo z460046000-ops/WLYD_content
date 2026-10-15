@@ -1,5 +1,26 @@
 # 测试记录
 
+## 2026-10-15：0.2.2 章节生成并发改为八路
+
+- `src/scheduler.js` 的默认章节任务与共享模型请求额度从 4 改为 8；检索阶段仍独立限制为 4。共享规划、全景补充和最终复核仍按原阶段顺序执行。
+- 自动化测得单次生成的在途模型请求峰值为 8，同时发起的 12 个模型请求峰值也为 8；取消测试覆盖已完成章保留、排队章未启动。`npm run check`、`npm test`（33/33）、`git diff --check` 通过。
+- 这次只验证本地调度与测试桩；尚未在 DSH 浏览器和真实模型网关重跑八路生成。`0.2.1` 实测的 `max-tokens`、空响应、生成工具 JSON 返回问题以及会话模型选择问题仍在，不能推断八路一定更快或能完整成稿。
+
+## 2026-10-15：0.2.1 浏览器调用中台 CallWan 知识库真实组稿
+
+在本机独立 DSH Web profile `wlyd-assembly-021-browser`（`127.0.0.1:3081`）核对插件页：`material-knowledge-assembly v0.2.1`，组件运行中。日常 `web` profile 的 `3080` 仍为 `0.2.0`，本轮没有重启或替换它。使用 `gen` 工作区已有导入 run `615ec2a8-f00b-44e2-a0da-a301c46823ac`（5 份 CallWan 材料，均已转换并完成后台同步），没有再次上传。浏览器依次调用 `wlyd_assembly_projects`、`status`、`outline`、`generate`；项目可见、默认目录可用。
+
+- 第一次生成 run `2801fdad-093c-4eeb-b3e5-5aa2df7bf4cf`：界面选了 `DeepSeek-V4.1-Flash`，`run.json` 却记录 `bigmodel/glm-5.3-flash`；规划请求等待约 6 分钟后主动停止，状态 `cancelled`。原因定位：DSH 会话选择通过请求钩子改变实际会话路由，插件 `src/model.js` 仍从 `exec.agent.options` 读取初始模型。新建会话后继承已保存的 DeepSeek 默认模型，下一轮插件记录变为 `qifu/deepseek-v4.1-flash`。这是模型选择传递缺陷，不应要求用户靠新建会话规避。
+- 正式生成 run `49409082-53b6-4fc6-b45d-3623cf45d184`：从 `2026-10-15T03:54:08Z` 到 `04:27:58Z`，约 **33 分 50 秒**。产物保留在本机 `/Users/zhangzhengao/Desktop/gen/artifacts/material-knowledge-assembly/runs/49409082-53b6-4fc6-b45d-3623cf45d184/`，含 `plan.json`、`evidence.json`、逐章原稿、`panorama-enrichment.json`、`consistency-review.json`、`report.json`、`report.md`。原件与报告正文没有提交或打包。
+- 后台检索覆盖为一个绑定知识库 `matched`、54 个命中片段、0 个请求错误；合并本次材料后共 77 条证据。共享规划约 5 分 32 秒；选择“需求挑战”与“管理—业务—技术”，两类全景维度分别按业务运转和产品分层自选。四条章节提取/撰写流水线确有并行推进。
+- 九个章节节点中 **6 完成、3 失败**：政策与趋势、解决方案总章的第二次撰写均以 `max-tokens` 结束；产品功能全景提取先遇 `max-tokens`，重试又收到“完成但无内容”。失败章有独立 `error.json`，其他章继续。报告状态仍是 `needs_human_review`，`report.md` 缺政策正文、总体方案正文与产品功能全景；不能把这个状态解释为完整生成成功。
+- 前四章首稿重写原因已用最终校验器只读复核：逐字引文不能定位、正文数字缺引文支持、待确认内容写成已发生事实。业务分析第二稿保留 7 段约 2800 字；场景第二稿只保留 7 段约 1260 字，另有 10 条过滤问题，内容深度不足。全景补充完成一次，但 3 处候选均因引文无效被过滤，追加 0 条，原业务全景保留。
+- 最终报告保留 49 段、127 处引用；逐条对照 `evidence.json`，**127/127 引文可逐字定位**。14 条 `assemblyLinks` 的证据与正文 ID **14/14 可定位**，均有挑战段，**0 条有趋势段**（趋势章失败）；可定位不等于业务因果已获确认。合作案例章明确没有可交付外部客户案例，只写内部试点与待确认项。
+- 质量问题：正文仍写入内部 PR 编号、未部署状态、技术路线和内部试点交付窗口，不宜直接给企业客户；场景章浅。`report.json` 有 141 条 `reviewItems`、85 条 `gaps`，审核噪声较重。正文比例显示业务 22.2%、解决方案 53.8% 均在软目标内，但不能掩盖关键章节缺失。会话身份为 `actorDshId=null`、`platformUserId=null`，平台用户映射未打通。
+- **浏览器返回缺陷**：第一份报告虽已落盘，`wlyd_assembly_generate` 返回时 DSH 报 `value is not lossless JSON`，Agent 误以为失败并自动发起第二次完整生成；重复 run `677d28a7-11ef-43f8-9ec3-6d7790a85adb` 已主动停止。源码 `src/generation.js` 无条件把可能为 `undefined` 的 `reasoningEffort` 放进 `modelRequests`，`assemble` 又返回整个内存 `state`；DSH 的无损 JSON 快照会拒绝含 `undefined` 的值。持久化 `run.json` 经 `JSON.stringify` 省略该字段，因此随后通过浏览器调用只读 `wlyd_assembly_status` 可查回原 run 的 `needs_human_review` 和 6/3 章节状态。这是高置信根因，修复后仍需用真实浏览器复测生成工具返回。
+
+本轮结论：中台检索、规则加载、并行组稿和持久化可执行；**完整对客方案与浏览器成功返回均未通过验收**。修复优先级为：①生成工具返回 JSON 合法、避免自动重复生成；②模型路由跟随会话选择；③长输入/长输出下的章节失败与缺章状态；④对外措辞、场景深度、审核项收敛。未重测首次上传、统一 `/retrieval/query`、500 MB 文件、用户身份映射、HTML/PPTX/PDF。
+
 ## 2026-10-15：0.2.1 两类全景动态规则与合稿补充
 
 - `npm run check` 十一个模块语法检查通过；`npm test` 33/33 通过，同一套测试在 Node 22.22.2 复跑通过；差异空白及 README/docs 本地链接检查通过。

@@ -48,7 +48,7 @@ async function fixture(llm, args = {}, signal = new AbortController().signal) {
   return { options, snapshots, dir, state }
 }
 
-test('四条章节流水线共享规划、原文与模型额度，乱序完成仍按目录合稿，单章错误只重试该章', async () => {
+test('八条章节流水线共享规划、原文与模型额度，乱序完成仍按目录合稿，单章错误只重试该章', async () => {
   let active = 0, peak = 0, extractionFailures = 0, writeFailures = 0
   const calls = []
   const f = await fixture(fakeModel(async prompt => {
@@ -68,7 +68,7 @@ test('四条章节流水线共享规划、原文与模型额度，乱序完成�
     } finally { active-- }
   }), { business_mode: 'current-state', trend_framework: 'pest' })
   const result = await generateChapters(f.options)
-  assert.equal(peak, 4)
+  assert.equal(peak, 8)
   assert.equal(calls[0].stage, 'plan')
   assert.equal(calls.at(-1).stage, 'consistency-review')
   const nodes = flattenOutline(f.options.outline)
@@ -90,7 +90,7 @@ test('四条章节流水线共享规划、原文与模型额度，乱序完成�
   assert.ok(!result.gaps.some(gap => gap.includes('对应关系')))
   assert.ok(result.reviewItems.includes('请业务负责人核对场景适用性'))
   assert.ok(f.state.chapters.every(c => c.status === 'completed'))
-  assert.equal(f.state.concurrency, 4)
+  assert.equal(f.state.concurrency, 8)
   assert.ok((await readdir(f.dir)).includes('plan.json'))
   const markdown = reportText({ ...result, title: '测试' })
   assert.match(markdown, /## 业务运行情况/u)
@@ -101,7 +101,7 @@ test('共享模型额度覆盖同时生成的报告，排队取消不会消耗�
   let active = 0, peak = 0
   const llm = fakeModel(async () => { active++; peak = Math.max(peak, active); await delay(10); active--; return {} })
   await Promise.all(Array.from({ length: 12 }, () => askModel(llm, agent, undefined, { stage: 'plan' })))
-  assert.equal(peak, 4)
+  assert.equal(peak, 8)
   const limit = createLimiter(1)
   let release
   const first = limit(() => new Promise(resolve => { release = resolve }))
@@ -149,18 +149,23 @@ test('取消保留已完成章，停止启动排队章；生成状态查询不�
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'wlyd-cancel-'))
   const controller = new AbortController()
   let cancellationStarted = false
+  const rules = await loadRules()
+  const outline = [...structuredClone(rules.template.sections), ...[1, 2, 3].map(index => ({
+    key: `extra-${index}`, title: `补充主题 ${index}`, roleId: 'custom', goal: '解释补充主题',
+    audience: '业务负责人', questions: ['如何落地'], evidenceScope: '已授权材料', acceptance: '事实和建议分明',
+  }))]
   const runningAgent = { ...agent, session: { header: { cwd } } }
   const client = { visibleProjectBases: async () => ['K1'], documents: async () => [{ id: 'D1', parse_status: 'completed' }],
     search: async () => [{ chunk_id: 'C1', knowledge_id: 'D1', content: evidence[0].content }] }
   const llm = fakeModel(async (prompt, signal) => {
-    if (prompt.chapter?.key === 'product-architecture' && !cancellationStarted) {
+    if (prompt.stage === 'write' && prompt.chapter?.key === 'product-architecture' && !cancellationStarted) {
       cancellationStarted = true
       controller.abort(new Error('用户取消'))
     }
     await delay(prompt.chapter?.key === 'policy-trends' ? 1 : 10, undefined, { signal })
     return answerFor(prompt)
   })
-  await assert.rejects(assemble({ client, llm, args: { project_id: 'P1' }, exec: { agent: runningAgent, signal: controller.signal } }), /用户取消|aborted/u)
+  await assert.rejects(assemble({ client, llm, args: { project_id: 'P1', outline }, exec: { agent: runningAgent, signal: controller.signal } }), /用户取消|aborted/u)
   const root = path.join(cwd, 'artifacts/material-knowledge-assembly/runs')
   const [runId] = await readdir(root)
   const before = await readFile(path.join(root, runId, 'run.json'), 'utf8')

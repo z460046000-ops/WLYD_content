@@ -1,4 +1,4 @@
-export const GENERATION_CONCURRENCY = 4
+export const GENERATION_CONCURRENCY = 8
 
 export const abortError = signal => signal?.reason || new DOMException('任务已取消', 'AbortError')
 
