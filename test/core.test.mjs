@@ -11,6 +11,19 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
+function draftModel(draft, inspect = () => {}) {
+  return { async *stream(request) {
+    const prompt = JSON.parse(request.messages[0].content[0].text)
+    inspect(prompt)
+    const value = prompt.stage === 'plan' ? { title: draft.title }
+      : prompt.stage === 'extract' ? { facts: [], writingOutline: [] }
+      : prompt.stage === 'consistency-review' ? { reviewItems: [] }
+      : { ...draft, sections: draft.sections.filter(section => section.key === prompt.chapter.key) }
+    yield { type: 'text-delta', text: JSON.stringify(value) }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } }
+}
+
 test('完整原件可提取文本，扫描/图片/DMG 与乱码逐文件诚实标注', async () => {
   const zip = new JSZip()
   zip.file('a.md', '# 产品\n面向企业客户。')
@@ -132,13 +145,9 @@ test('宽泛查询保留非提取问题命中的所有片段并传给模型', as
       })) : []
     } }
   let suppliedEvidence
-  const llm = { async *stream(request) {
-    suppliedEvidence = JSON.parse(request.messages[0].content[0].text).evidence
-    yield { type: 'text-delta', text: JSON.stringify({ title: '业务方案', sections: [{ key: 'solution', title: '解决方案', blocks: [{
-      text: '非预设问题也有价值的材料可用于业务方案。', evidence: [{ id: 'K1', quote: '非预设问题也有价值的材料片段' }],
-    }] }], gaps: [] }) }
-    yield { type: 'finish', reason: { kind: 'stop' } }
-  } }
+  const llm = draftModel({ title: '业务方案', sections: [{ key: 'solution', title: '解决方案', blocks: [{
+    text: '非预设问题也有价值的材料可用于业务方案。', evidence: [{ id: 'K1', quote: '非预设问题也有价值的材料片段' }],
+  }] }], gaps: [] }, prompt => { suppliedEvidence = prompt.evidence })
   await assemble({ client, llm, args: { project_id: 'P1' }, exec })
   assert.ok(queries.some(query => query.startsWith('本项目材料')))
   assert.equal(suppliedEvidence.length, 30)
@@ -218,19 +227,15 @@ test('本地材料到报告保留来源、待确认候选与缺章；平台不�
   assert.equal(source.files[0].status, 'converted')
   assert.equal(source.files[0].uploadStatus, undefined)
   let materialPieces
-  const llm = { async *stream(request) {
-    materialPieces = JSON.parse(request.messages[0].content[0].text).evidence.length
-    yield { type: 'text-delta', text: JSON.stringify({ title: '线索协作方案', sections: [
-      { key: 'business-challenges', title: '业务挑战', blocks: [{
-        text: '客户需要统一维护线索状态，销售和客服依据同一记录协作。',
-        evidence: [{ id: 'M1-1', quote: '客户需要统一维护线索状态' }],
-      }] },
-      { key: 'scenarios', title: '典型业务场景方案', blocks: [{
-        text: '建议探索跨团队线索交接场景，具体流程请客户核对。', supportMode: 'candidate', evidence: [],
-      }] },
-    ], gaps: [] }) }
-    yield { type: 'finish', reason: { kind: 'stop' } }
-  } }
+  const llm = draftModel({ title: '线索协作方案', sections: [
+    { key: 'business-challenges', title: '业务挑战', blocks: [{
+      text: '客户需要统一维护线索状态，销售和客服依据同一记录协作。',
+      evidence: [{ id: 'M1-1', quote: '客户需要统一维护线索状态' }],
+    }] },
+    { key: 'scenarios', title: '典型业务场景方案', blocks: [{
+      text: '建议探索跨团队线索交接场景，具体流程请客户核对。', supportMode: 'candidate', evidence: [],
+    }] },
+  ], gaps: [] }, prompt => { materialPieces = prompt.evidence.length })
   const result = await assemble({ client, llm, args: { source_run_id: source.runId }, exec })
   const report = JSON.parse(await readFile(result.jsonPath, 'utf8'))
   const evidence = JSON.parse(await readFile(result.evidencePath, 'utf8'))

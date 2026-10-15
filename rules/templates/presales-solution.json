@@ -1,18 +1,63 @@
 {
   "id": "presales-solution",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "产品售前解决方案",
   "description": "产品售前方案的默认目录。required 表示默认保留缺口与追问，不表示证据不足时强行生成正文；项目可预览并确认目录变更",
   "sections": [
-    { "key": "policy-trends", "title": "政策与趋势", "roleId": "policy-trends", "required": true },
-    { "key": "business-challenges", "title": "业务现状与需求挑战", "roleId": "business-challenges", "required": true },
-    { "key": "solution", "title": "解决方案", "roleId": "solution", "required": true, "children": [
-      { "key": "business-architecture", "title": "业务架构全景", "roleId": "business-architecture" },
-      { "key": "product-architecture", "title": "产品功能架构全景", "roleId": "product-architecture" },
-      { "key": "scenarios", "title": "典型业务场景方案", "roleId": "scenario-solution" }
-    ] },
-    { "key": "technical-platform", "title": "技术平台方案", "roleId": "technical-platform", "required": true },
-    { "key": "customer-cases", "title": "合作案例", "roleId": "customer-cases", "required": false },
-    { "key": "company-profile", "title": "企业介绍", "roleId": "company-profile", "required": true }
+    {
+      "key": "policy-trends",
+      "title": "政策与趋势",
+      "roleId": "policy-trends",
+      "required": true,
+      "framework": "auto"
+    },
+    {
+      "key": "business-challenges",
+      "title": "需求挑战",
+      "roleId": "business-challenges",
+      "required": true,
+      "mode": "auto"
+    },
+    {
+      "key": "solution",
+      "title": "解决方案",
+      "roleId": "solution",
+      "required": true,
+      "children": [
+        {
+          "key": "business-architecture",
+          "title": "业务架构全景",
+          "roleId": "business-architecture"
+        },
+        {
+          "key": "product-architecture",
+          "title": "产品功能架构全景",
+          "roleId": "product-architecture"
+        },
+        {
+          "key": "scenarios",
+          "title": "典型业务场景方案",
+          "roleId": "scenario-solution"
+        }
+      ]
+    },
+    {
+      "key": "technical-platform",
+      "title": "技术平台方案",
+      "roleId": "technical-platform",
+      "required": true
+    },
+    {
+      "key": "customer-cases",
+      "title": "合作案例",
+      "roleId": "customer-cases",
+      "required": false
+    },
+    {
+      "key": "company-profile",
+      "title": "企业介绍",
+      "roleId": "company-profile",
+      "required": true
+    }
   ]
 }

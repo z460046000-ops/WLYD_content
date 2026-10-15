@@ -14,7 +14,7 @@
 | Cordis 组件 ID | `wlyd-material-knowledge-assembly` |
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 官方工具前缀 | `wlyd_assembly_` |
-| 当前发布包 | `releases/wlyd-dsh-material-knowledge-assembly-0.1.8.tgz` |
+| 当前发布包 | `releases/wlyd-dsh-material-knowledge-assembly-0.2.0.tgz` |
 | 发布包校验清单 | [releases/SHA256SUMS](releases/SHA256SUMS) |
 | 本机 DSH 安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
 | 运行产物 | **当前 DSH 会话工作区**下的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
@@ -33,11 +33,14 @@ flowchart TD
     F --> G[内容中台 / WeKnora：文档处理、切片、向量索引]
     C --> H[src/rules.js：加载规则、校验目录、计算规则指纹]
     H --> I[rules：全局规则、写法、方案模板、章节角色]
-    C --> J[DSH LLM 服务：使用当前会话模型]
+    C --> N[src/generation.js：共享计划、四路逐章处理、合稿复核]
+    N --> J[src/model.js：当前会话模型与思考强度]
+    N --> S[src/scheduler.js：并行、重试阶段隔离、取消]
+    N --> K[src/content.js：引用与正文校验]
     E --> J
     G --> J
     I --> J
-    J --> K[正文、逐字引文与跨章节关系校验]
+    J --> K
     K --> L[report.md / report.json / evidence.json]
     L --> M[用户核对内容与来源]
 ```
@@ -47,11 +50,14 @@ flowchart TD
 | 层 | 当前职责 | 主要文件 |
 |---|---|---|
 | 交互层 | DSH 通用对话界面；上传文件、提出目录调整、查看工具结果与报告 | 由 DSH 提供，目前没有独立业务前端 |
-| 工具入口 | 声明参数、服务注入和执行入口 | `src/index.js` |
+| 工具入口 | 声明参数、服务注入和执行入口，转换为标准 JSON Schema | `src/index.js`、`src/schema.js` |
 | 流程编排 | 把读取、转换、目标选择、上传、检索、生成和检查串起来 | `src/workflow.js` |
 | 材料适配 | 识别格式、提取文字、逐文件报告失败原因 | `src/convert.js` |
 | 平台适配 | 配置账号登录、检查项目与绑定库、文件上传与知识检索 | `src/platform.js` |
 | 规则层 | 加载模板和章节角色，校验目录，保存实际规则版本及哈希 | `src/rules.js`、`rules/` |
+| 章节生成 | 共享关联计划、逐章取材写作、合稿复核 | `src/generation.js` |
+| 模型与调度 | 四路额度、取消、模型路由和思考强度；每阶段限时 | `src/scheduler.js`、`src/model.js` |
+| 内容检查 | 逐字引文、数字、章节与关系定位；Markdown 输出 | `src/content.js` |
 | 产物层 | 保存输入材料、证据、待审正文、规则指纹及运行结果 | 会话工作区的 `artifacts/` |
 
 后台负责已有文档的解析、切片、向量化和检索。插件当前在本地先把支持的文件转成 Markdown，再上传 Markdown；当前上传的不是原始 Office/PDF 文件。图片 OCR、DMG 解析等能力尚未接通。
@@ -66,7 +72,7 @@ rules/
 │   └── presales-solution.json           售前解决方案默认目录
 └── chapters/
     ├── policy-trends.json               政策与趋势
-    ├── business-challenges.json         现状与挑战
+    ├── business-challenges.json         业务分析：现状/挑战二选一
     ├── solution.json                    总体方案
     ├── business-architecture.json       业务架构全景的内容要求
     ├── product-architecture.json        产品功能全景的内容要求
@@ -86,7 +92,7 @@ rules/
 | `write` | 本章如何组织和撰写 | 改章节的表达任务时 |
 | `validate` | 本章应满足的内容要求 | 增加具体审核条件时 |
 | `missing` | 内容缺失时如何检索、给候选或追问 | 改缺失处理策略时 |
-| `dependsOnRoles` | 章节的语义依赖说明 | 为未来按章调度准备；当前不自动做依赖排序 |
+| `dependsOnRoles` | 章节的语义依赖说明 | 语义依赖由共享关联计划协调；当前不按此字段拓扑排序 |
 
 规则读取自**已安装插件包**内的 `rules/`。修改本仓库规则后须发布并重新安装；目前没有平台在线规则编辑器，也没有自动把用户对话写回规则文件的功能。
 
@@ -97,16 +103,25 @@ rules/
 方案模板与章节规则分开：模板决定“有什么章节、怎么排序”；章节角色决定“这一章怎么提取、写作与检查”。
 
 - `key`：项目目录中某个章节的稳定 ID，用来关联正文与跨章节关系。
-- `title`：给读者看的标题，可以改名。
+- `title`：给读者看的标题，由 LLM 按章节含义生成自然近义表达，每次可变化，不固定抽签；不保证每次必定不同。
+- `canonicalTitle`：保存改写前的目录标题，方便追溯；标题变化不改变 key、roleId、层级或规则。
 - `roleId`：绑定章节规则。不同方案可以复用同一角色。
 - `children`：子章节，当前目录最多三级。
 - `required`：默认需要覆盖；资料不足时记录待补项，不代表强行编造正文。
 
-当前默认六章：政策与趋势、业务现状与需求挑战、解决方案、技术平台方案、可选合作案例、企业介绍。解决方案包含业务全景、产品功能全景和典型业务场景三个子节点。目前全景部分生成的是文字内容，不生成架构图。
+当前默认六章：政策与趋势、业务分析（业务现状/需求挑战二选一）、解决方案、技术平台方案、可选合作案例、企业介绍。解决方案包含业务全景、产品功能全景和典型业务场景三个子节点。目前全景部分生成的是文字内容，不生成架构图。
 
 “客户解决方案”应新增 `rules/templates/customer-solution.json`，使用用户提供的目录；可继续绑定已有角色，只有新的语义任务才新增章节角色。后续海报等产物也可复用材料、证据和规则基础，但还需新增内容模型及呈现适配器。
 
 用户在 DSH 对话中要求增删、改名或排序时，先调用 `wlyd_assembly_outline` 预览，再把确认后的 `outline` 传给组稿。自定义 `roleId=custom` 须补 `goal`、`audience`、`questions`、`evidenceScope`、`acceptance`，不能只凭标题猜造提取规则。目前目录实例保存在生成产物中，尚无独立的目录版本审批界面。
+
+### 写法、内容重点与标题变化
+
+- `business_mode`：`current-state` 写运行流程、现有情况；`needs-challenges` 写问题、影响与诉求；`auto` 由共享规划依据材料与受众二选一，记录理由。近义标题仍需符合所选写法。
+- `trend_framework`：`pest` 或 `management-business-technology`（管理、业务、技术），`auto` 让模型二选一。资料少时展开变化→业务影响→建设回应，不编造政策或统计。
+- 业务分析占正文 **15–30%**；解决方案连同全部子章合计 **40–60%**，都是软目标。按非空白正文字符统计，不计标题、引用和审核清单；自定义目录缺少相关组时不强套比例。不达标进入 reviewItems，不靠重复凑数。
+- 场景应说明触发、参与者、用户与系统动作、能力、输出、价值机制和边界。对外方案不能把厂商内部研发问题当客户痛点。
+- 标题由共享规划统一改写，单章沿用同一版标题；非法、无据数字、混合写法或重复的变体回退默认标题，列入复核。语义是否贴切仍须人工核对。
 
 ### 全篇如何保持前后关联
 
@@ -126,27 +141,29 @@ DSH 对话中的 Agent 按用户指令调用工具；插件没有独立后台任
 2. `outline`：加载模板并预览默认或修改后的目录。
 3. `ingest`：读取文件/会话附件，逐文件转换；目标唯一时同步，否则返回选择项。
 4. `status`：按需查询后台文档状态，包括 `finalizing`；没有后台自动轮询。
-5. `generate`：收集本次可读正文和项目知识片段，加载规则，**一次模型调用生成全篇**，随后校验并落盘。
+5. `generate`：收集证据→共享关联规划→**四条逐章提取、撰写、校验流水线**→按目录合稿→一致性复核→待人工确认。
 
-本次材料的可读正文全部保留，按段送入模型；知识库先宽泛检索，再按章节查询，去重后保留命中正文。`extractQuestions` 只提供重点。插件不压缩 token 上下文，DSH 与模型服务仍有各自限制。模型调用当前最多等待 10 分钟，失败会记录结束原因；没有自动重试或断点续写。
+检索请求另有最多四路额度；局部检索失败保留成功片段并记录覆盖。章节提取和撰写共用四个在途模型请求名额，同一进程中的多个生成运行也共享，不能叠成八路。单章提取/撰写各最多尝试两次，失败后其他章节继续，所有阶段文件独立保存。取消时停止启动排队章，并向活动请求传递取消信号。
+
+本次材料的可读正文全部保留，按段送入模型；知识库先宽泛检索，再按章节查询，去重后保留命中正文。`extractQuestions` 只提供重点。插件不压缩 token 上下文，DSH 与模型服务仍有各自限制。每次模型请求最多等待 10 分钟（含排队）；会话的模型与 reasoningEffort 原样透传，由 DSH 校验支持性。run.json 记录每次请求阶段、输入字符规模、证据数、耗时边界与错误；字符数不等于 token 数。识别到上下文超限时不重复同一请求、不偷偷裁剪，返回阶段和输入规模，仍受平台真实上下文限制。
 
 ### 后续调度设计（尚未实现）
 
-建议在现有模块边界上增加：`材料就绪 → 证据整理 → 全篇关联规划 → 按章节角色生成与校验 → 全篇一致性检查 → 用户确认 → 呈现适配器`。
+下一步按 [后续待办](docs/backlog.md) 校准内容质量、接入统一多来源检索，再做逐章对话修改与版本恢复。共享规划、四路逐章生成和合稿复核已实现；确认后的呈现适配器仍待后续。
 
 单章任务应保存输入版本、规则指纹、证据和结果；用户扩写、缩写或重写某章时，只重算该章及受影响章节。`dependsOnRoles` 可用于依赖调度，但共享的能力与问题关系需要先固定版本，防止章节并行生成后相互矛盾。
 
-未来的任务队列、重试、取消、恢复、并发额度、目录版本和多人审批应使用平台能力。当前没有这些完整机制，不能把工具顺序调用当成已经具备持久化工作流。
+当前队列、局部重试、并发额度和取消属于进程内能力；落盘记录不等于重启后自动恢复。持久任务、断点续跑、单章编辑版本、目录版本和多人审批仍应对接平台能力。
 
 ## 5. 五个官方工具
 
 | 工具 | 主要输入 | 输出 / 用途 |
 |---|---|---|
 | `wlyd_assembly_projects` | 无 | 当前平台配置账号可见的项目 |
-| `wlyd_assembly_outline` | `template_id`、可选 `outline` | 目录预览与规则指纹 |
+| `wlyd_assembly_outline` | `template_id`、可选 `outline`、`business_mode`、`trend_framework` | 目录预览与规则指纹 |
 | `wlyd_assembly_ingest` | `files` 或 `attachment_refs`，可选项目/库 ID | 导入 `runId`、逐文件转换与同步状态 |
-| `wlyd_assembly_status` | 导入的 `run_id` | 查询该批文件的后台解析状态；不负责重新上传 |
-| `wlyd_assembly_generate` | `source_run_id`、可选 `project_id`、模板、目录、读者 | 生成 `runId`、报告与证据路径 |
+| `wlyd_assembly_status` | 导入或生成的 `run_id` | 查询解析或逐章进度；导入状态未变时不重写文件，生成查询始终只读 |
+| `wlyd_assembly_generate` | `source_run_id`、可选 `project_id`、模板、目录、读者、两个模式参数 | 生成 `runId`、报告与证据路径 |
 
 会话附件只接受当前会话用户真实上传的引用；附件 ID、文件名和字节数必须匹配。DSH 的完整 ID 通常以 `sha256:` 开头；模型省略前缀时仍须匹配会话里已有的同一附件，读取时使用平台保存的真实引用。
 
@@ -158,7 +175,7 @@ DSH 对话中的 Agent 按用户指令调用工具；插件没有独立后台任
 
 ```bash
 # 安装到指定 DSH profile；请将路径换成下载包的绝对路径
-dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.1.8.tgz
+dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.2.0.tgz
 
 dsh --profile web --dump-config
 ```
@@ -199,7 +216,10 @@ dsh --profile web --dump-config
 ├── run.json            该次导入/生成的状态、来源 run、项目与身份信息
 ├── materials/*.md      仅导入运行：逐文件转换出的材料
 ├── evidence.json       仅生成运行：本地/知识库证据、检索覆盖与输入缺口
-├── report.json         生成成功后：目录、正文、引用、关系、待核对项、规则指纹
+├── plan.json           共享关联计划、模式理由、近义标题、规则指纹
+├── chapters/<key>/     extraction.json、draft.json、chapter.json 或 error.json
+├── consistency-review.json  合稿模型复核成功时保存的待核对项
+├── report.json         schemaVersion=2：目录、正文、模式、篇幅、引用与待核对项
 └── report.md           生成成功后：供用户阅读的正文
 ```
 
@@ -216,7 +236,8 @@ dsh --profile web --dump-config
 | 文件 `completed` | 后台解析完成，可作为知识检索候选 |
 | 文件/导入 `upload_failed` | 上传失败；`status` 不会自动重传，但本地材料仍可使用 |
 | 导入 `uploaded_or_pending` | 至少有材料已提交或复用，具体结果仍看逐文件状态 |
-| 生成 `collecting_evidence` / `generating` | 正在收集证据或调用模型 |
+| 生成 `collecting_evidence` / `planning` / `generating` / `reviewing` | 收集证据、规划、逐章处理、合稿复核；chapters 数组提供逐章进度 |
+| 生成 `cancelled` | 已取消，已完成的章节文件保留；尚无自动恢复工具 |
 | 生成 `needs_human_review` | 生成调用结束并落盘，仍须核对正文、引用与缺章；不等于六章全部合格 |
 | 生成 `failed` | 未完成成稿，查看 `run.json.error`；不能把中间证据文件当报告 |
 
@@ -233,12 +254,12 @@ dsh --profile web --dump-config
 | DMG、旧 Office、音视频、链接抓取 | 尚未实现，不能宣称“任意文件都可解析” |
 | 文件限额 | 每批 100 个、单文件 500 MB；ZIP 最多 1000 条、展开共 1 GB |
 | 500 MB 实测 | 入口限额已放宽；只完成 25 MB 文本抽查，尚未证明任意格式的 500 MB 全链路可用 |
-| 知识检索 | 只检索当前账号可见且绑定目标项目的完成文档；每次后端查询请求最多 50 条，命中结果不在插件里裁短 |
+| 知识检索 | 新 retrieval/query 尚未接入，当前仍使用 hybrid-search；只检索当前账号可见且绑定目标项目的完成文档；每次后端查询请求最多 50 条，命中结果不在插件里裁短 |
 | 公开资料检索 | 尚未接入，不能把模型生成的政策当公开检索结果 |
 | 内容编辑 | 目录调整可用；专用章节编辑界面、章节版本与确认状态机尚未实现 |
 | 展示与导出 | 当前为 Markdown/JSON；HTML、架构图、PPTX/PDF 尚未实现 |
 
-2026-10-15 浏览器已实际调用官方工具生成一份待审报告：8 个章节节点、56 条输入证据，保留的 20 处引用均能逐字定位。该次报告的跨章节关联记录未通过校验，且原材料为内部项目资料，正文包含内部研发与商业判断，**不能直接当作对外售前成稿**。这证明了真实生成入口可用，尚未证明售前内容规则、受众适配和关联质量已验收通过。
+2026-10-15 的旧版 `0.1.7/0.1.8` 浏览器已实际调用官方工具生成一份待审报告：8 个章节节点、56 条输入证据，保留的 20 处引用均能逐字定位。该次报告的跨章节关联记录未通过校验，且原材料为内部项目资料，正文包含内部研发与商业判断，**不能直接当作对外售前成稿**。这证明旧版真实生成入口可用。`0.2.0` 新流水线已通过自动化验证，尚未重跑真实网关与浏览器全链路；售前内容质量仍待真实材料复验。
 
 最新真实浏览器验收、报告质量与未打通项见 [docs/test-record.md](docs/test-record.md)。本机环境、后端状态和模型路由会变化，单元测试通过不能代替真实浏览器结果。
 
@@ -258,6 +279,8 @@ shasum -a 256 -c SHA256SUMS
 
 更多资料：
 
+- [后续待办与统一检索接入计划](docs/backlog.md)
+- [外部审阅逐项处理](docs/review-fixes-20261015.md)
 - [架构与调度边界](docs/architecture.md)
 - [goodcase 取样与 MVP 规则依据](docs/mvp-rule-evidence.md)
 - [可复用能力与旧规则隔离](docs/reuse-audit.md)

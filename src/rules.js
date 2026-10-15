@@ -6,6 +6,30 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../rules/', import.meta.url))
 const hash = text => createHash('sha256').update(text).digest('hex')
 const safe = value => /^[a-z][a-z0-9-]*$/u.test(value)
+export const BUSINESS_MODES = ['auto', 'current-state', 'needs-challenges']
+export const TREND_FRAMEWORKS = ['auto', 'pest', 'management-business-technology']
+export const FRAMEWORK_DIMENSIONS = { pest: ['政治', '经济', '社会', '技术'],
+  'management-business-technology': ['管理', '业务', '技术'] }
+
+export const flattenOutline = outline => outline.flatMap(node => [node, ...flattenOutline(node.children || [])])
+
+export function requestedModes(outline, args = {}) {
+  const nodes = flattenOutline(outline)
+  const businessMode = args.business_mode ?? nodes.find(node => node.roleId === 'business-challenges')?.mode ?? 'auto'
+  const trendFramework = args.trend_framework ?? nodes.find(node => node.roleId === 'policy-trends')?.framework ?? 'auto'
+  if (!BUSINESS_MODES.includes(businessMode)) throw new Error('业务章须选择 auto、current-state 或 needs-challenges')
+  if (!TREND_FRAMEWORKS.includes(trendFramework)) throw new Error('趋势章须选择 auto、pest 或 management-business-technology')
+  return { businessMode, trendFramework }
+}
+
+/** A preview keeps auto unresolved; generation resolves it from the shared plan. */
+export function applyModes(outline, modes) {
+  return outline.map(node => ({ ...node,
+    ...(node.roleId === 'business-challenges' ? { mode: modes.businessMode,
+      title: modes.businessMode === 'current-state' ? '业务现状' : '需求挑战' } : {}),
+    ...(node.roleId === 'policy-trends' ? { framework: modes.trendFramework } : {}),
+    ...(node.children ? { children: applyModes(node.children, modes) } : {}) }))
+}
 
 export async function loadRules(templateId = 'presales-solution') {
   if (!safe(templateId)) throw new Error('无效的方案模板 ID')
@@ -50,6 +74,8 @@ export function validateOutline(outline, rules) {
       keys.add(section.key)
       if (!String(section.title ?? '').trim() || section.title.length > 100) throw new Error('章节标题无效')
       if (!rules.chapters[section.roleId] && section.roleId !== 'custom') throw new Error(`缺少章节规则：${section.roleId}`)
+      if (section.mode !== undefined && (section.roleId !== 'business-challenges' || !BUSINESS_MODES.includes(section.mode))) throw new Error('章节 mode 无效')
+      if (section.framework !== undefined && (section.roleId !== 'policy-trends' || !TREND_FRAMEWORKS.includes(section.framework))) throw new Error('章节 framework 无效')
       if (section.roleId === 'custom' && !['goal', 'audience', 'questions', 'evidenceScope', 'acceptance'].every(k => section[k])) {
         throw new Error('自定义章节须说明目标、读者、问题、证据范围和验收条件')
       }
