@@ -14,7 +14,7 @@
 | Cordis 组件 ID | `wlyd-material-knowledge-assembly` |
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 官方工具前缀 | `wlyd_assembly_` |
-| 当前发布包 | `releases/wlyd-dsh-material-knowledge-assembly-0.2.3.tgz` |
+| 当前发布包 | `releases/wlyd-dsh-material-knowledge-assembly-0.2.4.tgz` |
 | 发布包校验清单 | [releases/SHA256SUMS](releases/SHA256SUMS) |
 | 本机 DSH 安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
 | 运行产物 | **当前 DSH 会话工作区**下的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
@@ -100,6 +100,15 @@ rules/
 规则读取自**已安装插件包**内的 `rules/`。修改本仓库规则后须发布并重新安装；目前没有平台在线规则编辑器，也没有自动把用户对话写回规则文件的功能。
 
 共用写作规则现要求：正文尽量用简短小标题或短语概括论点，再用短句解释；从大段材料取材时先概括，不直接堆砌原文。事实、因果、条件和边界仍需写清，逐字引文仍需能在原始证据中定位。这是写法偏好，不强制每段套格式，也不裁剪送入模型的原始材料。
+
+通用取材与撰写顺序定义在 `rules/global.json` v0.6.0 的 `extraction.workflow`，所有方案模板和章节共用：
+
+1. **全局了解材料**：明确主题、读者和范围，盘点事实、能力、场景、问题与限制，形成各章取材方向。
+2. **按章节定向混合检索**：结合本章目标和本次材料中的对象、业务术语构造查询；提取问题是重点提示，其他相关有价值材料同样保留。
+3. **带上必要上下文**：保留命中片段所需的标题、前后文、条件及边界，并保留原文和来源定位；确有必要时才回读更完整原文。
+4. **内容不足再补检索**：针对具体缺失调整查询或补查上下文；仍不足时明确标注待确认内容，确需用户事实时再追问，无关章节继续。
+
+原始材料与证据完整留存，按章取材依据相关性和上下文完整性，不新增固定 token 裁剪上限。**0.2.4 安装包包含这套通用规则；当前程序仍先统一检索，再把同一份公共材料池传给各章。按章动态查询、上下文回读和缺失驱动的补检索尚未接入自动调度，不能认为写入规则就已经实现。** 已安装的旧包和运行中的浏览器插件不会自动更新。
 
 规则来自完整 goodcase 的组织方法归纳，取样依据见 [docs/mvp-rule-evidence.md](docs/mvp-rule-evidence.md)。这是可审查的 MVP 规则配置，尚不是模型微调。goodcase 中的客户、能力、数字、奖项和承诺不会作为新报告的事实来源。
 
@@ -195,7 +204,7 @@ DSH 对话中的 Agent 按用户指令调用工具；插件没有独立后台任
 
 ```bash
 # 安装到指定 DSH profile；请将路径换成下载包的绝对路径
-dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.2.3.tgz
+dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.2.4.tgz
 
 dsh --profile web --dump-config
 ```
