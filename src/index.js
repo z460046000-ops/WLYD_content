@@ -25,7 +25,7 @@ export function apply(ctx, config = {}) {
     parameters: {
       files: { type: 'array', items: { type: 'string' }, description: '工作区内材料路径' },
       attachment_refs: { type: 'array', items: { type: 'object', properties: {
-        attachmentId: { type: 'string' }, name: { type: 'string' }, bytes: { type: 'number' },
+        attachmentId: { type: 'string', description: '当前会话附件的完整 ID，通常为 sha256: 加 64 位摘要' }, name: { type: 'string' }, bytes: { type: 'number' },
       } }, description: '本次会话用户上传的附件引用' },
       project_id: { type: 'string', description: '多个可访问项目时，由用户选择的项目 ID' },
       knowledge_base_id: { type: 'string', description: '多个可见绑定知识库时，由用户选择的知识库 ID' },

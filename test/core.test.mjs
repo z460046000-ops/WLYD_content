@@ -94,7 +94,8 @@ test('单文件入口允许 500 MB，按文件顺序处理，超出上限逐文�
 test('DSH 服务声明允许工作区文件读取，附件经可选服务读取', async () => {
   assert.ok(inject.includes('fs'))
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'wlyd-inject-test-'))
-  const attachment = { attachmentId: 'test-attachment', name: 'attached.md', bytes: 18 }
+  const digest = 'a'.repeat(64)
+  const attachment = { attachmentId: `sha256:${digest}`, name: 'attached.md', bytes: 18 }
   const agent = { session: { header: { cwd }, deriveMessages: () => [{
     source: { kind: 'user' }, content: [{ type: 'file', attachment }],
   }] } }
@@ -102,7 +103,10 @@ test('DSH 服务声明允许工作区文件读取，附件经可选服务读取'
   const services = {
     fs: { resolve: async value => value, stat: async () => ({ type: 'file', size: 18 }),
       readBytes: async () => Buffer.from('工作区材料可以读取。') },
-    attachments: { async *readFileStream() { yield Buffer.from('会话附件可以读取。') } },
+    attachments: { async *readFileStream(ref) {
+      assert.equal(ref.attachmentId, attachment.attachmentId)
+      yield Buffer.from('会话附件可以读取。')
+    } },
   }
   const ctx = new Proxy({ get: name => services[name] }, { get(target, name) {
     if (name === 'fs' && !inject.includes('fs')) throw new Error('cannot get property "fs" without inject')
@@ -110,7 +114,7 @@ test('DSH 服务声明允许工作区文件读取，附件经可选服务读取'
     return name in services ? services[name] : target[name]
   } })
   const client = { projects: async () => { throw new Error('平台未配置') } }
-  const result = await ingest({ ctx, client, args: { files: ['local.md'], attachment_refs: [attachment] }, exec })
+  const result = await ingest({ ctx, client, args: { files: ['local.md'], attachment_refs: [{ ...attachment, attachmentId: digest }] }, exec })
   assert.equal(result.status, 'local_only')
   assert.deepEqual(result.files.map(file => file.status), ['converted', 'converted'])
   assert.ok(result.files.every(file => file.materialPath))
@@ -251,6 +255,7 @@ test('唯一授权项目默认上传；pending 和 finalizing 均能查询到 co
   const uploads = []
   let checks = 0
   const client = { projects: async () => [{ id: 'P1' }], visibleProjectBases: async () => ['K1'],
+    documents: async () => [],
     upload: async (p, b, name, markdown) => { uploads.push({ p, b, name, markdown }); return { status: 202, data: { id: 'D1', parse_status: 'pending' }, requestId: 'R1' } },
     knowledge: async () => ({ parse_status: ++checks === 1 ? 'finalizing' : 'completed' }) }
   const result = await ingest({ ctx, client, args: { files: ['input.md'] }, exec })
@@ -262,6 +267,34 @@ test('唯一授权项目默认上传；pending 和 finalizing 均能查询到 co
   assert.equal(interim.files[0].uploadStatus, 'finalizing')
   const refreshed = await (await import('../src/workflow.js')).status({ client, runId: result.runId, agent })
   assert.equal(refreshed.files[0].uploadStatus, 'completed')
+})
+
+test('重复材料只复用目标库内摘要和大小一致的文档；真正上传失败单独标记', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'wlyd-dedup-test-'))
+  const exec = { agent: { session: { header: { cwd } } }, signal: new AbortController().signal }
+  const ctx = { fs: { resolve: async value => value,
+    stat: async () => ({ type: 'file', size: 50 }),
+    readBytes: async () => Buffer.from('产品用于企业客户线索协作。') } }
+  let documents = []
+  let uploads = 0
+  const client = { projects: async () => [{ id: 'P1' }], visibleProjectBases: async () => ['K1'],
+    documents: async () => documents,
+    upload: async () => { uploads++; if (uploads > 1) throw new Error('HTTP 500')
+      return { data: { id: 'D1', parse_status: 'completed' } } } }
+  const first = await ingest({ ctx, client, args: { files: ['input.md'] }, exec })
+  documents = [{ id: 'D1', file_hash: first.files[0].materialMd5,
+    file_size: first.files[0].materialBytes, parse_status: 'completed' }]
+  const reused = await ingest({ ctx, client, args: { files: ['input.md'] }, exec })
+  assert.equal(reused.files[0].uploadDisposition, 'reused')
+  assert.equal(reused.files[0].knowledgeId, 'D1')
+  assert.equal(reused.files[0].uploadStatus, 'completed')
+  assert.equal(uploads, 1)
+  documents[0].file_size++
+  const failed = await ingest({ ctx, client, args: { files: ['input.md'] }, exec })
+  assert.equal(uploads, 2)
+  assert.equal(failed.status, 'upload_failed')
+  assert.equal(failed.files[0].uploadStatus, 'upload_failed')
+  assert.equal(failed.files[0].status, 'converted')
 })
 
 test('多个项目时停在选择阶段；伪造会话附件不读取也不上传', async () => {

@@ -12,6 +12,7 @@ const runPath = (agent, runId) => {
   return path.join(rootOf(agent), runId)
 }
 const safeName = name => path.basename(String(name)).replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 100) || 'material'
+const attachmentKey = value => /^[a-f0-9]{64}$/u.test(String(value)) ? `sha256:${value}` : String(value)
 const deepClone = value => JSON.parse(JSON.stringify(value))
 const reportText = report => [`# ${report.title}`, '', ...report.sections.flatMap(section => [
   `## ${section.title}`, '', ...section.blocks.flatMap(block => [block.text, '',
@@ -45,12 +46,12 @@ async function* readInputs(ctx, exec, args) {
     for (const ref of refs) {
       const name = safeName(ref.name)
       try {
-        const valid = allowed.get(ref.attachmentId)
+        const valid = allowed.get(attachmentKey(ref.attachmentId))
         if (!valid || valid.name !== ref.name || valid.bytes !== ref.bytes) throw new Error('附件不属于当前会话用户')
         if (!store?.readFileStream) throw new Error('DSH 附件读取服务不可用')
         const chunks = []
         let size = 0
-        for await (const chunk of store.readFileStream(ref, exec.signal)) {
+        for await (const chunk of store.readFileStream(valid, exec.signal)) {
           size += chunk.length
           if (size > MAX_BYTES) throw new Error('超过 500 MB')
           chunks.push(Buffer.from(chunk))
@@ -86,6 +87,8 @@ export async function ingest({ ctx, client, args, exec }) {
           await writeFile(path.join(dir, 'materials', name), markdown, { mode: 0o600 })
           record.materialPath = `materials/${name}`
           record.contentSha256 = sha256(markdown)
+          record.materialMd5 = createHash('md5').update(markdown).digest('hex')
+          record.materialBytes = Buffer.byteLength(markdown)
         }
         record.source = input.source
         state.files.push(record)
@@ -116,8 +119,19 @@ export async function ingest({ ctx, client, args, exec }) {
       return { ...state, runDir: dir }
     }
     state.knowledgeBaseId = baseId
+    let existing = []
+    try { existing = await client.documents(baseId, exec.signal) }
+    catch (error) { state.deduplicationIssue = `未能查询已有文档：${error.message}` }
     for (const file of converted) {
       try {
+        const duplicate = existing.find(item => !item.deleted_at && item.id
+          && item.file_hash === file.materialMd5 && Number(item.file_size) === file.materialBytes)
+        if (duplicate) {
+          file.knowledgeId = String(duplicate.id)
+          file.uploadStatus = String(duplicate.parse_status || 'unknown')
+          file.uploadDisposition = 'reused'
+          continue
+        }
         const response = await client.upload(state.projectId, baseId, safeName(file.name) + '.md',
           path.join(dir, file.materialPath), exec.signal)
         if (!response.data?.id) throw new Error('上传响应缺少知识文档 ID')
@@ -126,7 +140,7 @@ export async function ingest({ ctx, client, args, exec }) {
         file.uploadRequestId = response.requestId
       } catch (error) { file.uploadStatus = 'upload_failed'; file.uploadError = error.message }
     }
-    state.status = 'uploaded_or_pending'
+    state.status = converted.every(file => file.uploadStatus === 'upload_failed') ? 'upload_failed' : 'uploaded_or_pending'
     return { ...state, runDir: dir }
   } catch (error) {
     state.status = 'failed'; state.error = error.message

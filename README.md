@@ -1,52 +1,265 @@
 # DSH 材料与知识组装插件
 
-独立 DSH/Cordis 插件。输入工作区文件或当前 DSH 会话附件，逐文件提取 Markdown；在目标项目及其绑定知识库唯一、且当前平台配置账号可访问时默认上传。按版本化章节规则，从本次材料和授权知识片段组装带引文的 `report.md`/`report.json`。本项目不依赖旧售前插件、旧文案插件或 HTML Anything。
+基于 DSH/Cordis 的独立内容生成插件。把用户材料转为 Markdown，同步到指定项目的知识库，再结合本次材料、授权知识片段与章节规则生成可审阅的方案正文。
 
-## 项目目录
+当前交付范围是**内容底稿**：`report.md`、`report.json`、`evidence.json` 和运行记录。HTML 编辑、全景图绘制、PPTX/PDF 导出留待后续实现。本项目不依赖旧售前插件、旧文案插件或 HTML Anything。
 
-| 目录 | 用途 |
+## 1. 先找到项目、插件和产物
+
+| 对象 | 位置 / 标识 |
 |---|---|
-| `rules/global.json`、`rules/style.json` | 全局事实纪律与写法原则；不含案例事实 |
-| `rules/templates/` | 方案类型的默认目录；目前只有“产品售前解决方案” |
-| `rules/chapters/` | 按语义角色绑定的提取、撰写、校验和缺失规则 |
-| `src/convert.js` | 格式识别、限额、逐文件转换状态 |
-| `src/platform.js` | 内容中台登录、项目绑定、上传和 chunk 检索 |
-| `src/workflow.js` | 导入、证据组装、模型生成、引文校验、运行记录 |
-| `src/index.js` | 独立 DSH 工具注册 |
-| `test/`、`docs/` | 定向测试与来源、复用、测试记录 |
+| GitHub 仓库 | <https://github.com/z460046000-ops/WLYD_content> |
+| 本机开发目录 | `/Users/zhangzhengao/Documents/ChatGPT/WLYDContant/dsh-material-knowledge-assembly` |
+| 插件 npm 包名 | `@wlyd/dsh-material-knowledge-assembly` |
+| Cordis 组件 ID | `wlyd-material-knowledge-assembly` |
+| DSH 插件页名称 | `material-knowledge-assembly` |
+| 官方工具前缀 | `wlyd_assembly_` |
+| 当前发布包 | `releases/wlyd-dsh-material-knowledge-assembly-0.1.8.tgz` |
+| 发布包校验清单 | [releases/SHA256SUMS](releases/SHA256SUMS) |
+| 本机 DSH 安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
+| 运行产物 | **当前 DSH 会话工作区**下的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
 
-未来可新增另一种方案模板，复用章节角色或增加新的角色规则。用户通过对话修改目录时，先用目录工具预览，再将确认后的目录传给生成工具；`key` 是稳定标识，`roleId` 决定规则。自定义章节须补目标、读者、问题、证据范围和验收条件。当前目录确认由对话完成，尚无平台前端专用的版本审批界面。
+开发目录、安装目录和运行产物是三个位置。修改仓库源码后，要重新打包、安装并重启 DSH 才能让新版本生效。用户在 `gen` 工作区测试时，产物位于 `/Users/zhangzhengao/Desktop/gen/artifacts/material-knowledge-assembly/runs/`，不会自动写回本仓库。
 
-## 安装
+## 2. 产品架构
 
-需要 Node.js 22+ 和 DSH。安装包见 `releases/wlyd-dsh-material-knowledge-assembly-0.1.6.tgz`。
-
-```bash
-dsh plugin --profile <profile> add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.1.6.tgz
-dsh --profile <profile> --dump-config
+```mermaid
+flowchart TD
+    A[DSH 对话界面：附件、提示词、目录确认] --> B[src/index.js：五个官方工具]
+    B --> C[src/workflow.js：导入、状态查询、证据组装、成稿]
+    C --> D[src/convert.js：格式识别与文字转换]
+    D --> E[本地材料 Markdown 与 run.json]
+    C --> F[src/platform.js：项目、绑定库、上传、解析状态、检索]
+    F --> G[内容中台 / WeKnora：文档处理、切片、向量索引]
+    C --> H[src/rules.js：加载规则、校验目录、计算规则指纹]
+    H --> I[rules：全局规则、写法、方案模板、章节角色]
+    C --> J[DSH LLM 服务：使用当前会话模型]
+    E --> J
+    G --> J
+    I --> J
+    J --> K[正文、逐字引文与跨章节关系校验]
+    K --> L[report.md / report.json / evidence.json]
+    L --> M[用户核对内容与来源]
 ```
 
-插件 Cordis ID 为 `wlyd-material-knowledge-assembly`；工具前缀为 `wlyd_assembly_`。平台配置可放 DSH 插件 config、进程环境变量或 `$DSH_HOME/.env`：`WLYD_PLATFORM_BASE_URL`、`WLYD_PLATFORM_EMAIL`、`WLYD_PLATFORM_PASSWORD`、`WLYD_PLATFORM_TENANT_ID`。不要把凭证提交到仓库。配置账号权限与真实 DSH 用户身份尚未打通。
+### 各层负责什么
 
-## 使用
+| 层 | 当前职责 | 主要文件 |
+|---|---|---|
+| 交互层 | DSH 通用对话界面；上传文件、提出目录调整、查看工具结果与报告 | 由 DSH 提供，目前没有独立业务前端 |
+| 工具入口 | 声明参数、服务注入和执行入口 | `src/index.js` |
+| 流程编排 | 把读取、转换、目标选择、上传、检索、生成和检查串起来 | `src/workflow.js` |
+| 材料适配 | 识别格式、提取文字、逐文件报告失败原因 | `src/convert.js` |
+| 平台适配 | 配置账号登录、检查项目与绑定库、文件上传与知识检索 | `src/platform.js` |
+| 规则层 | 加载模板和章节角色，校验目录，保存实际规则版本及哈希 | `src/rules.js`、`rules/` |
+| 产物层 | 保存输入材料、证据、待审正文、规则指纹及运行结果 | 会话工作区的 `artifacts/` |
 
-1. 用 `wlyd_assembly_projects` 查看可访问项目。把文件拖入 DSH 后，调用 `wlyd_assembly_ingest`，传工作区 `files` 或当前会话的 `attachment_refs`。多项目或多知识库时指定用户选中的 ID。
-2. 工具返回 `runId`。`converted` 表示本地 Markdown 已生成；`pending`/`processing` 表示后台仍在解析。用 `wlyd_assembly_status` 查询。`needs_ocr`、`unsupported`、`failed` 不能当作已入库。
-3. 用 `wlyd_assembly_outline` 预览默认目录；若用户要求调整，确认修改后的目录。调用 `wlyd_assembly_generate`，传 `source_run_id`，可选传 `project_id`、`outline` 和 `audience`。
-4. 每次运行写入工作区 `artifacts/material-knowledge-assembly/runs/<runId>/`，含 `materials/*.md`（导入运行）、`evidence.json`、`report.md`、`report.json`、`run.json`（生成运行）。内部优先按“能力→场景→问题→趋势”组稿，按确认目录呈现。`report.json` 中的 `assemblyLinks` 记录建议关联；证据不足的典型场景假设在正文标“待确认”，关系待核对项在 `reviewItems`，不因关联不完整阻断报告。
+后台负责已有文档的解析、切片、向量化和检索。插件当前在本地先把支持的文件转成 Markdown，再上传 Markdown；当前上传的不是原始 Office/PDF 文件。图片 OCR、DMG 解析等能力尚未接通。
 
-同事可复制的测试提示词：
+## 3. 规则在哪里，分别管什么
 
-> 请把我刚上传的产品说明文件转成 Markdown；若当前账号只有一个可访问项目和一个绑定知识库，就同步进去，否则列出选择项。解析完成后按“产品售前解决方案”默认目录预览章节。经我确认，再用本次材料和授权知识片段生成带逐字引文的报告，并告诉我哪些章节缺资料。
+```text
+rules/
+├── global.json                         全篇事实、取材、组稿和校验规则
+├── style.json                          共用表达方式，不含产品事实
+├── templates/
+│   └── presales-solution.json           售前解决方案默认目录
+└── chapters/
+    ├── policy-trends.json               政策与趋势
+    ├── business-challenges.json         现状与挑战
+    ├── solution.json                    总体方案
+    ├── business-architecture.json       业务架构全景的内容要求
+    ├── product-architecture.json        产品功能全景的内容要求
+    ├── scenario-solution.json           典型场景方案
+    ├── technical-platform.json          技术平台
+    ├── customer-cases.json              合作案例
+    ├── company-profile.json             企业介绍
+    └── delivery-service.json            可选的实施与服务章节
+```
 
-## 当前边界
+| 规则文件 / 字段 | 含义 | 修改时机 |
+|---|---|---|
+| [global.json](rules/global.json) | 全局证据要求、事实与假设的区别、组稿顺序、全篇检查 | 改所有方案共用的内容纪律时 |
+| [style.json](rules/style.json) | 标题、句式、业务动作、能力与条件的表达方式 | 改共用写法时 |
+| [presales-solution.json](rules/templates/presales-solution.json) | 某种方案的目录、章名、顺序、层级与必选性 | 改方案类型的默认结构时 |
+| `chapters/*.json` 的 `extractQuestions` | 本章重点检索线索，**不是材料白名单** | 从 goodcase 归纳新的取材重点时 |
+| `write` | 本章如何组织和撰写 | 改章节的表达任务时 |
+| `validate` | 本章应满足的内容要求 | 增加具体审核条件时 |
+| `missing` | 内容缺失时如何检索、给候选或追问 | 改缺失处理策略时 |
+| `dependsOnRoles` | 章节的语义依赖说明 | 为未来按章调度准备；当前不自动做依赖排序 |
 
-- 插件入口允许每批最多 100 个文件、单文件至 500 MB，按文件顺序转换；ZIP 最多 1000 个条目、展开总量 1 GB，以防压缩炸弹。支持 UTF-8 文本、DOCX、文字 PDF、PPTX、XLSX、限额 ZIP；扩展名为文本但含大量二进制控制字符的文件返回 `unsupported`，不上传乱码。图片与扫描 PDF 返回 `needs_ocr`。DMG 返回 `unsupported`，不挂载也不运行应用；旧 Office、音视频和链接抓取尚未实现。
-- 只使用已完成解析的项目绑定知识文档；HTTP 202 仅代表上传已接收。多目标须指定，不会自动选公共库。
-- 仅从可信 DSH 会话结构填 `actorDshId`；`platformUserId` 暂为空。当前平台 API 用配置账号登录，不能声称后台已按真实用户归属上传。
-- 模型只通过引用 ID 与逐字引文做机器校验；语义是否被证据充分支持、案例是否可公开仍需人工审核。无可核对正文时不交付空稿。
-- HTML 编辑、PPTX/PDF 输出、全景图视觉规则和“客户解决方案”模板等待后续材料，不在本版。
-- `extractQuestions` 只是各章优先检索线索。本次可读材料全部分段送入模型；知识库先做宽泛查询再做章节查询，命中片段不在插件内裁短或限制总数。单次混合检索向后端请求最多 50 条；后端和 DSH 模型仍可能限制实际结果、上传大小或上下文，插件不自行压缩输入。
-- 已接入当前账号可见的项目绑定知识库检索；公开资料检索、逐章对话扩写/缩写、平台前端目录版本审批尚未接入。可生成带“待确认”标记的相似场景或建设方向；正式政策、客户实际问题和现有产品能力仍须来源核对。500 MB 原件和后端接收上限尚未实测。
+规则读取自**已安装插件包**内的 `rules/`。修改本仓库规则后须发布并重新安装；目前没有平台在线规则编辑器，也没有自动把用户对话写回规则文件的功能。
 
-规则来源与限制见 [取样记录](docs/mvp-rule-evidence.md)、[架构与调度](docs/architecture.md)、[复用边界](docs/reuse-audit.md)、[测试记录](docs/test-record.md)。
+规则来自完整 goodcase 的组织方法归纳，取样依据见 [docs/mvp-rule-evidence.md](docs/mvp-rule-evidence.md)。这是可审查的 MVP 规则配置，尚不是模型微调。goodcase 中的客户、能力、数字、奖项和承诺不会作为新报告的事实来源。
+
+### 内容结构为什么可以变化
+
+方案模板与章节规则分开：模板决定“有什么章节、怎么排序”；章节角色决定“这一章怎么提取、写作与检查”。
+
+- `key`：项目目录中某个章节的稳定 ID，用来关联正文与跨章节关系。
+- `title`：给读者看的标题，可以改名。
+- `roleId`：绑定章节规则。不同方案可以复用同一角色。
+- `children`：子章节，当前目录最多三级。
+- `required`：默认需要覆盖；资料不足时记录待补项，不代表强行编造正文。
+
+当前默认六章：政策与趋势、业务现状与需求挑战、解决方案、技术平台方案、可选合作案例、企业介绍。解决方案包含业务全景、产品功能全景和典型业务场景三个子节点。目前全景部分生成的是文字内容，不生成架构图。
+
+“客户解决方案”应新增 `rules/templates/customer-solution.json`，使用用户提供的目录；可继续绑定已有角色，只有新的语义任务才新增章节角色。后续海报等产物也可复用材料、证据和规则基础，但还需新增内容模型及呈现适配器。
+
+用户在 DSH 对话中要求增删、改名或排序时，先调用 `wlyd_assembly_outline` 预览，再把确认后的 `outline` 传给组稿。自定义 `roleId=custom` 须补 `goal`、`audience`、`questions`、`evidenceScope`、`acceptance`，不能只凭标题猜造提取规则。目前目录实例保存在生成产物中，尚无独立的目录版本审批界面。
+
+### 全篇如何保持前后关联
+
+内部优先按 **有据产品能力 → 可落地业务场景 → 回应的问题 → 相关趋势** 反推组稿；读者仍按已确认目录阅读。
+
+`report.json` 的 `assemblyLinks` 保存能力证据、场景段落、问题段落与趋势段落的建议关系。关系不足时先检索；仍不足则给明确标注为“待确认”的场景假设或建设方向，不把关系不足放入缺口来阻断报告。真实客户事实、已实现功能、正式政策和数字仍须证据。
+
+`reviewItems` 记录需要人工核对的关系。机器可核对引用编号、逐字引文和部分数字；机器不能据此证明因果或语义关系一定成立。
+
+## 4. 现在如何调度，未来怎样扩展
+
+### 当前实现
+
+DSH 对话中的 Agent 按用户指令调用工具；插件没有独立后台任务队列或定时调度器。
+
+1. `projects`：确认配置账号可见的项目。
+2. `outline`：加载模板并预览默认或修改后的目录。
+3. `ingest`：读取文件/会话附件，逐文件转换；目标唯一时同步，否则返回选择项。
+4. `status`：按需查询后台文档状态，包括 `finalizing`；没有后台自动轮询。
+5. `generate`：收集本次可读正文和项目知识片段，加载规则，**一次模型调用生成全篇**，随后校验并落盘。
+
+本次材料的可读正文全部保留，按段送入模型；知识库先宽泛检索，再按章节查询，去重后保留命中正文。`extractQuestions` 只提供重点。插件不压缩 token 上下文，DSH 与模型服务仍有各自限制。模型调用当前最多等待 10 分钟，失败会记录结束原因；没有自动重试或断点续写。
+
+### 后续调度设计（尚未实现）
+
+建议在现有模块边界上增加：`材料就绪 → 证据整理 → 全篇关联规划 → 按章节角色生成与校验 → 全篇一致性检查 → 用户确认 → 呈现适配器`。
+
+单章任务应保存输入版本、规则指纹、证据和结果；用户扩写、缩写或重写某章时，只重算该章及受影响章节。`dependsOnRoles` 可用于依赖调度，但共享的能力与问题关系需要先固定版本，防止章节并行生成后相互矛盾。
+
+未来的任务队列、重试、取消、恢复、并发额度、目录版本和多人审批应使用平台能力。当前没有这些完整机制，不能把工具顺序调用当成已经具备持久化工作流。
+
+## 5. 五个官方工具
+
+| 工具 | 主要输入 | 输出 / 用途 |
+|---|---|---|
+| `wlyd_assembly_projects` | 无 | 当前平台配置账号可见的项目 |
+| `wlyd_assembly_outline` | `template_id`、可选 `outline` | 目录预览与规则指纹 |
+| `wlyd_assembly_ingest` | `files` 或 `attachment_refs`，可选项目/库 ID | 导入 `runId`、逐文件转换与同步状态 |
+| `wlyd_assembly_status` | 导入的 `run_id` | 查询该批文件的后台解析状态；不负责重新上传 |
+| `wlyd_assembly_generate` | `source_run_id`、可选 `project_id`、模板、目录、读者 | 生成 `runId`、报告与证据路径 |
+
+会话附件只接受当前会话用户真实上传的引用；附件 ID、文件名和字节数必须匹配。DSH 的完整 ID 通常以 `sha256:` 开头；模型省略前缀时仍须匹配会话里已有的同一附件，读取时使用平台保存的真实引用。
+
+项目与绑定知识库必须同时在当前配置账号的可见范围内。重复材料按目标库返回的 `file_hash`（MD5）与大小匹配并复用文档 ID，避免重复上传；此 MD5 仅用于对接后台去重字段，本地来源追踪另存 SHA-256。没有匹配时走真实上传，不能把 HTTP 500 当成功。
+
+## 6. 安装和开始使用
+
+需要 Node.js 22+、DSH，以及内容中台配置账号。
+
+```bash
+# 安装到指定 DSH profile；请将路径换成下载包的绝对路径
+dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.1.8.tgz
+
+dsh --profile web --dump-config
+```
+
+安装后重启对应 DSH 服务，在插件页核对 `material-knowledge-assembly` 版本与组件“运行中”。同机可能安装多个历史插件；本项目的验收只以 `wlyd_assembly_*` 工具为准。
+
+配置项可放插件 config、环境变量或 `$DSH_HOME/.env`，优先级依次为插件 config → 环境变量 → `.env`：
+
+| 插件 config | 环境变量 | 说明 |
+|---|---|---|
+| `baseUrl` | `WLYD_PLATFORM_BASE_URL` | 内容中台 HTTPS 地址；本机测试可用 `http://127.0.0.1:<port>` |
+| `email` | `WLYD_PLATFORM_EMAIL` | 配置账号 |
+| `password` | `WLYD_PLATFORM_PASSWORD` | 配置账号密码 |
+| `tenantId` | `WLYD_PLATFORM_TENANT_ID` | 目标租户；登录返回租户须一致 |
+
+凭证不要写入仓库或报告。DSH 用户与配置账号的身份映射尚未正式打通，`platformUserId` 保持空；不能声称后台已按真实平台用户归属上传。
+
+### 可直接使用的提示词
+
+**第一步：导入与预览目录**
+
+> 请只使用 wlyd_assembly_* 工具。把我上传的材料转成 Markdown，列出可访问项目，并让我选择同步目标；若目标唯一就同步。再预览“产品售前解决方案”目录，告诉我每份文件的转换与后台状态。
+
+**第二步：生成底稿**
+
+> 我确认这个目录和项目。请用刚才导入的 runId、该项目知识库和 presales-solution 模板生成方案，读者是企业业务负责人。优先按产品能力→场景→问题→趋势关联组稿，缺关系时给明确标注的待确认候选。请返回真实报告和证据路径；工具失败时直接说明原因。
+
+**第三步：调整内容结构**
+
+> 在当前目录增加“实施与服务”，绑定 delivery-service 角色，放在技术平台之后。先展示调整后的目录，等我确认后再生成。
+
+当前增删章节可通过目录预览实现；逐章对话扩写/缩写尚未作为独立工具接入，不能承诺只修改某章而其余章节完全不变。
+
+## 7. 运行产物和状态怎么看
+
+```text
+<会话工作区>/artifacts/material-knowledge-assembly/runs/<runId>/
+├── run.json            该次导入/生成的状态、来源 run、项目与身份信息
+├── materials/*.md      仅导入运行：逐文件转换出的材料
+├── evidence.json       仅生成运行：本地/知识库证据、检索覆盖与输入缺口
+├── report.json         生成成功后：目录、正文、引用、关系、待核对项、规则指纹
+└── report.md           生成成功后：供用户阅读的正文
+```
+
+导入与生成有不同 `runId`；生成记录用 `sourceRunId` 指向材料导入记录。`loadedRules` 保存各规则文件的版本和 SHA-256，`ruleFingerprint` 保存组合指纹，便于回查“这一稿用了哪套规则”。
+
+| 状态 | 实际含义 |
+|---|---|
+| 文件 `converted` | 本地 Markdown 已生成，不代表后台解析完成 |
+| 文件 `needs_ocr` / `unsupported` / `failed` | 需要额外能力或当前材料不可读，原因逐文件保留 |
+| `needs_project_selection` / `needs_knowledge_base_selection` | 需选择目标，不会擅自选库 |
+| `local_only` | 已有本地材料，平台未配置/不可用或没有目标；可继续本地组稿 |
+| 文件 `uploadDisposition=reused` | 已复用目标库内相同摘要和大小的文档 |
+| 文件 `pending` / `processing` / `finalizing` | 后台仍在处理，须再次查询 |
+| 文件 `completed` | 后台解析完成，可作为知识检索候选 |
+| 文件/导入 `upload_failed` | 上传失败；`status` 不会自动重传，但本地材料仍可使用 |
+| 导入 `uploaded_or_pending` | 至少有材料已提交或复用，具体结果仍看逐文件状态 |
+| 生成 `collecting_evidence` / `generating` | 正在收集证据或调用模型 |
+| 生成 `needs_human_review` | 生成调用结束并落盘，仍须核对正文、引用与缺章；不等于六章全部合格 |
+| 生成 `failed` | 未完成成稿，查看 `run.json.error`；不能把中间证据文件当报告 |
+
+机器会过滤无效引文、无据数字和不合格段落，因此最终稿可能有缺章或待补项。引用可逐字定位也不等于事实含义已核实，用户仍需核对语义和对外使用范围。
+
+## 8. 支持范围与实际限制
+
+| 输入 / 功能 | 当前行为 |
+|---|---|
+| UTF-8 文本、Markdown | 提取正文；大量控制字符的伪文本文件拒绝 |
+| DOCX、文字 PDF、PPTX、XLSX | 提取可读文字；不保证图表、版式、图片文字完整 |
+| ZIP | 逐条转换支持格式；有展开量与条目数保护 |
+| 图片、扫描 PDF | 返回 `needs_ocr`，未接 OCR |
+| DMG、旧 Office、音视频、链接抓取 | 尚未实现，不能宣称“任意文件都可解析” |
+| 文件限额 | 每批 100 个、单文件 500 MB；ZIP 最多 1000 条、展开共 1 GB |
+| 500 MB 实测 | 入口限额已放宽；只完成 25 MB 文本抽查，尚未证明任意格式的 500 MB 全链路可用 |
+| 知识检索 | 只检索当前账号可见且绑定目标项目的完成文档；每次后端查询请求最多 50 条，命中结果不在插件里裁短 |
+| 公开资料检索 | 尚未接入，不能把模型生成的政策当公开检索结果 |
+| 内容编辑 | 目录调整可用；专用章节编辑界面、章节版本与确认状态机尚未实现 |
+| 展示与导出 | 当前为 Markdown/JSON；HTML、架构图、PPTX/PDF 尚未实现 |
+
+2026-10-15 浏览器已实际调用官方工具生成一份待审报告：8 个章节节点、56 条输入证据，保留的 20 处引用均能逐字定位。该次报告的跨章节关联记录未通过校验，且原材料为内部项目资料，正文包含内部研发与商业判断，**不能直接当作对外售前成稿**。这证明了真实生成入口可用，尚未证明售前内容规则、受众适配和关联质量已验收通过。
+
+最新真实浏览器验收、报告质量与未打通项见 [docs/test-record.md](docs/test-record.md)。本机环境、后端状态和模型路由会变化，单元测试通过不能代替真实浏览器结果。
+
+## 9. 开发、验证与交付
+
+```bash
+npm ci
+npm run check
+npm test
+npm pack --pack-destination releases
+
+# 在 releases 目录执行
+shasum -a 256 -c SHA256SUMS
+```
+
+交付前检查：包白名单只含源码、规则、文档和 Cordis 清单；不包含凭证、goodcase 原件、用户材料、运行报告或旧插件源码。每次改规则应更新相应 `version`，改执行逻辑则更新包版本，重新生成测试记录与安装包哈希。
+
+更多资料：
+
+- [架构与调度边界](docs/architecture.md)
+- [goodcase 取样与 MVP 规则依据](docs/mvp-rule-evidence.md)
+- [可复用能力与旧规则隔离](docs/reuse-audit.md)
+- [测试记录与真实未打通项](docs/test-record.md)
+- [项目记忆](memory.md)
