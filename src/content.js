@@ -1,5 +1,40 @@
 import { flattenOutline, FRAMEWORK_DIMENSIONS } from './rules.js'
 
+export const PANORAMA_ROLES = ['business-architecture', 'product-architecture']
+export const CAPABILITY_STATUSES = ['existing', 'pilot', 'planned', 'proposed', 'unknown']
+export const CAPABILITY_OWNERS = ['self', 'third-party', 'customer', 'unknown']
+
+function capabilityBoundary(block, planRefs, plan, candidate) {
+  for (const [field, allowed] of [['capabilityStatus', CAPABILITY_STATUSES], ['capabilityOwnership', CAPABILITY_OWNERS]]) {
+    if (block[field] !== undefined && !allowed.includes(block[field])) return { error: `${field} 无效` }
+  }
+  const capabilities = (plan.capabilities || []).filter(item => planRefs.capabilityIds.includes(item.id))
+  const states = capabilities.map(item => item.capabilityStatus || 'unknown')
+  const owners = capabilities.map(item => item.capabilityOwnership || 'unknown')
+  const inferredStatus = ['planned', 'proposed', 'pilot', 'unknown', 'existing'].find(value => states.includes(value)) || 'unknown'
+  const mixedStatus = new Set(states.filter(value => value !== 'unknown')).size > 1
+  const mixedOwnership = new Set(owners.filter(value => value !== 'unknown')).size > 1
+  const capabilityStatus = mixedStatus ? 'unknown' : block.capabilityStatus || (candidate ? 'proposed' : inferredStatus)
+  const capabilityOwnership = mixedOwnership ? 'unknown' : block.capabilityOwnership || (owners.length && new Set(owners).size === 1 ? owners[0] : 'unknown')
+  if ((candidate && capabilityStatus === 'existing' && (!states.length || states.some(value => value !== 'existing'))) ||
+    (capabilityStatus === 'existing' && states.some(value => ['planned', 'proposed', 'pilot'].includes(value)))) {
+    return { error: '候选、试点或规划能力被升级为已具备' }
+  }
+  const text = String(block.text || '')
+  const positiveClaims = text.split(/[，,。；;！？!?]/u).filter(clause => !/不能|不得|不应|不把|不写|不作为|不代表|不等于|不意味着|尚未|还未|并未|暂未|尚不|暂不|并不|不是|并非|不属于|非自研|非自主/u.test(clause)).join('，')
+  const stateClaim = positiveClaims.replace(/未(?:全面具备|全面上线|全面支持|全面交付|已具备|已实现|已上线|已交付|现已支持|已经支持)/gu, '')
+  if (!mixedStatus && (['planned', 'proposed'].includes(capabilityStatus) || states.some(value => ['planned', 'proposed'].includes(value))) &&
+    /已具备|已实现|已上线|已交付|现已支持|已经支持/u.test(stateClaim)) return { error: '建议或规划能力写成了已具备' }
+  if (!mixedStatus && (capabilityStatus === 'pilot' || states.includes('pilot')) && /全面具备|全面上线|全面支持|全面交付/u.test(stateClaim)) return { error: '试点能力写成了全面具备' }
+  const external = owners.some(value => ['third-party', 'customer'].includes(value)) || ['third-party', 'customer'].includes(capabilityOwnership)
+  const ownershipClaim = positiveClaims.replace(/非(?:自主研发|自主开发|自研|我司自有)/gu, '')
+  if (!mixedOwnership && external && (capabilityOwnership === 'self' || /自主研发|自主开发|自研|我司自有/u.test(ownershipClaim))) return { error: '外部能力写成了自有或自研功能' }
+  const labels = [({ pilot: '试点中', planned: '规划中' })[capabilityStatus],
+    ({ 'third-party': '第三方能力', customer: '客户已有能力' })[capabilityOwnership]].filter(Boolean)
+  const label = labels.length ? `【${labels.join('·')}】` : ''
+  return { capabilityStatus, capabilityOwnership, mixed: mixedStatus || mixedOwnership, text: label && !text.includes(label) ? label + text : text }
+}
+
 export function reportText(report) {
   const byKey = new Map(report.sections.map(section => [section.key, section]))
   const lines = [`# ${report.title}`, '']
@@ -34,6 +69,7 @@ export function validateDraft(draft, evidence, outline, plan = {}) {
   visit(outline)
   const sections = []
   const issues = []
+  const reviewItems = []
   for (const item of Array.isArray(draft?.sections) ? draft.sections : []) {
     if (!item || !allowed.has(item.key) || !Array.isArray(item.blocks)) { issues.push('模型返回目录外章节'); continue }
     const blocks = []
@@ -69,14 +105,19 @@ export function validateDraft(draft, evidence, outline, plan = {}) {
       const blockId = proposedId.startsWith(item.key + '-') && /^\d+$/u.test(proposedId.slice(item.key.length + 1))
         ? proposedId : `${item.key}-${index + 1}`
       if (ids.has(blockId)) { issues.push(`${item.key} 段落 ID 重复`); continue }
-      ids.add(blockId)
       const planRefs = {}
       for (const [field, collection] of Object.entries({ capabilityIds: 'capabilities', scenarioIds: 'scenarios', problemIds: 'problems', trendIds: 'trends' })) {
         const validIds = new Set((plan[collection] || []).map(entry => entry.id))
         planRefs[field] = [...new Set((Array.isArray(block.planRefs?.[field]) ? block.planRefs[field] : []).filter(id => validIds.has(id)))]
       }
+      const boundary = PANORAMA_ROLES.includes(node.roleId) ? capabilityBoundary(block, planRefs, plan, candidate) : null
+      if (boundary?.error) { issues.push(`${item.key}：${boundary.error}`); continue }
+      if (boundary?.mixed) reviewItems.push(`${item.key} 同段涉及不同能力状态或归属，整体标签保留未知，请逐项核对正文边界`)
+      ids.add(blockId)
+      const body = boundary?.text || text
       blocks.push({ id: blockId, ...(dimension ? { dimension } : {}), planRefs,
-        text: candidate && !text.startsWith('【待确认') ? `【待确认·典型场景假设】${text}` : text,
+        ...(boundary ? { capabilityStatus: boundary.capabilityStatus, capabilityOwnership: boundary.capabilityOwnership } : {}),
+        text: candidate && !body.includes('【待确认') ? `【待确认·典型场景假设】${body}` : body,
         supportMode: candidate ? 'candidate' : 'sourced', evidence: checked })
     }
     if (blocks.length) sections.push({ key: item.key, title: node.title, roleId: node.roleId, ...(node.mode ? { mode: node.mode } : {}), ...(node.framework ? { framework: node.framework } : {}), blocks })
@@ -84,7 +125,6 @@ export function validateDraft(draft, evidence, outline, plan = {}) {
   if (!sections.length) throw new Error(`模型没有生成有据正文：${issues.join('；')}`)
   const blockIds = new Set(sections.flatMap(section => section.blocks.map(block => block.id)))
   const assemblyLinks = []
-  const reviewItems = []
   for (const link of Array.isArray(draft?.assemblyLinks) ? draft.assemblyLinks : []) {
     if (!link || typeof link !== 'object') { reviewItems.push('有一条组稿关系格式不正确，已略过该关系'); continue }
     const source = sources.get(String(link.capabilityEvidenceId ?? ''))

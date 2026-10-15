@@ -43,7 +43,7 @@ export function apply(ctx, config = {}) {
 
   register({
     name: 'wlyd_assembly_status',
-    description: '查看导入的逐文件解析状态，或生成运行的规划、逐章提取/撰写/校验进度。生成运行只读，不触发重新生成。',
+    description: '查看导入的逐文件解析状态，或生成运行的规划、逐章提取/撰写/校验、全景补充与合稿复核进度。生成运行只读，不触发重新生成。',
     parameters: { run_id: { type: 'string', required: true } }, output,
     execute: (args, exec) => status({ client, runId: args.run_id, agent: exec.agent, signal: exec.signal }),
     presentCall: args => card('查看解析状态', 'read', { runId: args?.run_id }),
@@ -66,7 +66,7 @@ export function apply(ctx, config = {}) {
 
   register({
     name: 'wlyd_assembly_generate',
-    description: '先制定全篇关联计划，再最多四路并行逐章提取、撰写与校验，合成带逐字依据的售前报告。业务现状/需求挑战、PEST/管理业务技术各二选一。自定义目录须先确认。保留 plan.json、逐章文件和报告；部分章节失败不丢失其他结果。',
+    description: '先制定全篇关联计划，再最多四路并行逐章提取、撰写与校验，合稿后最多一轮按需补充两类全景，再复核有据售前报告。全景维度按读者、问题和重点场景自选。业务现状/需求挑战、PEST/管理业务技术各二选一。自定义目录须先确认。保留 plan.json、逐章原稿及补充记录；部分失败不丢失其他结果。',
     parameters: {
       source_run_id: { type: 'string', description: '材料导入返回的 runId' },
       project_id: { type: 'string', description: '可访问的方案项目 ID' },

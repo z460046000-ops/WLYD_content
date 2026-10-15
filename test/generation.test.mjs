@@ -28,6 +28,7 @@ const blockFor = chapter => ({ id: `${chapter.key}-7`, text: '可考虑以统一
   planRefs: { capabilityIds: ['cap-1'], scenarioIds: ['scenario-1'], problemIds: ['problem-1'], trendIds: ['trend-1'] } })
 const answerFor = prompt => prompt.stage === 'plan' ? plan
   : prompt.stage === 'extract' ? { facts: [{ text: evidence[0].content, evidence: [ref] }], writingOutline: [] }
+  : prompt.stage === 'panorama-enrichment' ? { additions: [], reviewItems: [] }
   : prompt.stage === 'consistency-review' ? { reviewItems: ['请业务负责人核对场景适用性'] }
   : { sections: [{ key: prompt.chapter.key, blocks: [blockFor(prompt.chapter)] }], gaps: ['对应关系待核对'] }
 function fakeModel(handle = answerFor) {

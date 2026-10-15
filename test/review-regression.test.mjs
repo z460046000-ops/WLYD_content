@@ -106,4 +106,12 @@ test('模型保留全部输入并透传会话思考强度，上下文超限返�
     assert.match(error.message, /未裁剪输入.*阶段=extract.*字符/u)
     return true
   })
+  const finishError = { async *stream() {
+    yield { type: 'finish', reason: { kind: 'error', failure: { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'model context window exceeded' } } }
+  } }
+  await assert.rejects(askModel(finishError, agent, undefined, prompt), error => {
+    assert.equal(error.code, 'MODEL_CONTEXT_LIMIT')
+    assert.match(error.message, /model context window exceeded/u)
+    return true
+  })
 })

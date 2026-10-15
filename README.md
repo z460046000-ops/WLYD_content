@@ -14,7 +14,7 @@
 | Cordis 组件 ID | `wlyd-material-knowledge-assembly` |
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 官方工具前缀 | `wlyd_assembly_` |
-| 当前发布包 | `releases/wlyd-dsh-material-knowledge-assembly-0.2.0.tgz` |
+| 当前发布包 | `releases/wlyd-dsh-material-knowledge-assembly-0.2.1.tgz` |
 | 发布包校验清单 | [releases/SHA256SUMS](releases/SHA256SUMS) |
 | 本机 DSH 安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
 | 运行产物 | **当前 DSH 会话工作区**下的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
@@ -36,6 +36,8 @@ flowchart TD
     C --> N[src/generation.js：共享计划、四路逐章处理、合稿复核]
     N --> J[src/model.js：当前会话模型与思考强度]
     N --> S[src/scheduler.js：并行、重试阶段隔离、取消]
+    N --> P[src/panorama.js：合稿后单轮全景补充]
+    P --> J
     N --> K[src/content.js：引用与正文校验]
     E --> J
     G --> J
@@ -56,6 +58,7 @@ flowchart TD
 | 平台适配 | 配置账号登录、检查项目与绑定库、文件上传与知识检索 | `src/platform.js` |
 | 规则层 | 加载模板和章节角色，校验目录，保存实际规则版本及哈希 | `src/rules.js`、`rules/` |
 | 章节生成 | 共享关联计划、逐章取材写作、合稿复核 | `src/generation.js` |
+| 全景补充 | 依据后文重点场景，单轮按需追加并保存原稿 | `src/panorama.js` |
 | 模型与调度 | 四路额度、取消、模型路由和思考强度；每阶段限时 | `src/scheduler.js`、`src/model.js` |
 | 内容检查 | 逐字引文、数字、章节与关系定位；Markdown 输出 | `src/content.js` |
 | 产物层 | 保存输入材料、证据、待审正文、规则指纹及运行结果 | 会话工作区的 `artifacts/` |
@@ -123,6 +126,17 @@ rules/
 - 场景应说明触发、参与者、用户与系统动作、能力、输出、价值机制和边界。对外方案不能把厂商内部研发问题当客户痛点。
 - 标题由共享规划统一改写，单章沿用同一版标题；非法、无据数字、混合写法或重复的变体回退默认标题，列入复核。语义是否贴切仍须人工核对。
 
+### 两类全景图怎样生成内容
+
+规则分别在 [business-architecture.json](rules/chapters/business-architecture.json) 与 [product-architecture.json](rules/chapters/product-architecture.json)。学习依据与执行细节见 [两类全景学习记录](docs/panorama-rule-evidence.md)。
+
+- **业务架构全景**解释角色、业务运转及结果；**产品功能全景**解释模块怎样支撑业务及其边界。每个核心模块说明“对应问题→使用者与动作→支撑能力→产出及价值机制”。
+- 先全量盘点，再按目标读者、核心问题、重点场景自选维度、分层和分组，保存选择理由。管理/执行/底座、用户层/应用层/能力层等都是参考，可组合、自建、合并或省略，不固定三层或五层。
+- `plan.json` 的 `chapterGuidance[].organization` 保存 `purpose`、`scope`、`dimensions`、`reason`；维度缺失只提醒核对，不强行填模板。两图与场景共用已有问题、能力和场景 ID。
+- 各章完成后，若已有全景章及场景章，用**一次** `panorama-enrichment` 请求检查实际后文，按需追加缺失上级节点、关键支撑或价值说明。充分覆盖可不追加；只补已有全景，原段落、目录与共享 ID 保持不变。过滤重复、越界或无效补充；失败保留原稿并提示核对，不循环重试。
+- 全景段落附 `capabilityStatus`（existing/pilot/planned/proposed/unknown）和 `capabilityOwnership`（self/third-party/customer/unknown）；未知不会自动当自有或已具备。对规划、试点、第三方和客户已有能力给可读标记，拦截部分明确升级冲突；分类与语义仍需人工核对。
+- 当前输出为全景**文字内容**，图形渲染、样式、HTML/PPTX/PDF 仍在后续范围。本次 PDF 和截图仅供离线提炼规则，未作为每次生成的产品事实或模型微调数据。
+
 ### 全篇如何保持前后关联
 
 内部优先按 **有据产品能力 → 可落地业务场景 → 回应的问题 → 相关趋势** 反推组稿；读者仍按已确认目录阅读。
@@ -141,7 +155,7 @@ DSH 对话中的 Agent 按用户指令调用工具；插件没有独立后台任
 2. `outline`：加载模板并预览默认或修改后的目录。
 3. `ingest`：读取文件/会话附件，逐文件转换；目标唯一时同步，否则返回选择项。
 4. `status`：按需查询后台文档状态，包括 `finalizing`；没有后台自动轮询。
-5. `generate`：收集证据→共享关联规划→**四条逐章提取、撰写、校验流水线**→按目录合稿→一致性复核→待人工确认。
+5. `generate`：收集证据→共享关联规划→**四条逐章提取、撰写、校验流水线**→按目录合稿→单轮按需补充全景→一致性复核→待人工确认。
 
 检索请求另有最多四路额度；局部检索失败保留成功片段并记录覆盖。章节提取和撰写共用四个在途模型请求名额，同一进程中的多个生成运行也共享，不能叠成八路。单章提取/撰写各最多尝试两次，失败后其他章节继续，所有阶段文件独立保存。取消时停止启动排队章，并向活动请求传递取消信号。
 
@@ -175,7 +189,7 @@ DSH 对话中的 Agent 按用户指令调用工具；插件没有独立后台任
 
 ```bash
 # 安装到指定 DSH profile；请将路径换成下载包的绝对路径
-dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.2.0.tgz
+dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.2.1.tgz
 
 dsh --profile web --dump-config
 ```
@@ -216,8 +230,10 @@ dsh --profile web --dump-config
 ├── run.json            该次导入/生成的状态、来源 run、项目与身份信息
 ├── materials/*.md      仅导入运行：逐文件转换出的材料
 ├── evidence.json       仅生成运行：本地/知识库证据、检索覆盖与输入缺口
-├── plan.json           共享关联计划、模式理由、近义标题、规则指纹
+├── plan.json           共享关联计划、全景动态维度及理由、模式、标题、规则指纹
 ├── chapters/<key>/     extraction.json、draft.json、chapter.json 或 error.json
+│                       全景有效追加后另存 enriched.json，原 chapter.json 保留
+├── panorama-enrichment.json  单轮全景补充的建议、过滤、追加结果和覆盖提示
 ├── consistency-review.json  合稿模型复核成功时保存的待核对项
 ├── report.json         schemaVersion=2：目录、正文、模式、篇幅、引用与待核对项
 └── report.md           生成成功后：供用户阅读的正文
@@ -236,7 +252,7 @@ dsh --profile web --dump-config
 | 文件 `completed` | 后台解析完成，可作为知识检索候选 |
 | 文件/导入 `upload_failed` | 上传失败；`status` 不会自动重传，但本地材料仍可使用 |
 | 导入 `uploaded_or_pending` | 至少有材料已提交或复用，具体结果仍看逐文件状态 |
-| 生成 `collecting_evidence` / `planning` / `generating` / `reviewing` | 收集证据、规划、逐章处理、合稿复核；chapters 数组提供逐章进度 |
+| 生成 `collecting_evidence` / `planning` / `generating` / `enriching_panoramas` / `reviewing` | 收集证据、规划、逐章处理、单轮全景补充、合稿复核；chapters 与 panoramaEnrichment 提供进度 |
 | 生成 `cancelled` | 已取消，已完成的章节文件保留；尚无自动恢复工具 |
 | 生成 `needs_human_review` | 生成调用结束并落盘，仍须核对正文、引用与缺章；不等于六章全部合格 |
 | 生成 `failed` | 未完成成稿，查看 `run.json.error`；不能把中间证据文件当报告 |
@@ -259,7 +275,7 @@ dsh --profile web --dump-config
 | 内容编辑 | 目录调整可用；专用章节编辑界面、章节版本与确认状态机尚未实现 |
 | 展示与导出 | 当前为 Markdown/JSON；HTML、架构图、PPTX/PDF 尚未实现 |
 
-2026-10-15 的旧版 `0.1.7/0.1.8` 浏览器已实际调用官方工具生成一份待审报告：8 个章节节点、56 条输入证据，保留的 20 处引用均能逐字定位。该次报告的跨章节关联记录未通过校验，且原材料为内部项目资料，正文包含内部研发与商业判断，**不能直接当作对外售前成稿**。这证明旧版真实生成入口可用。`0.2.0` 新流水线已通过自动化验证，尚未重跑真实网关与浏览器全链路；售前内容质量仍待真实材料复验。
+2026-10-15 的旧版 `0.1.7/0.1.8` 浏览器已实际调用官方工具生成一份待审报告：8 个章节节点、56 条输入证据，保留的 20 处引用均能逐字定位。该次报告的跨章节关联记录未通过校验，且原材料为内部项目资料，正文包含内部研发与商业判断，**不能直接当作对外售前成稿**。这证明旧版真实生成入口可用。`0.2.1` 新流水线验证与样稿结果见测试记录；尚未重跑浏览器全链路，真实业务材料的售前质量仍待复验。
 
 最新真实浏览器验收、报告质量与未打通项见 [docs/test-record.md](docs/test-record.md)。本机环境、后端状态和模型路由会变化，单元测试通过不能代替真实浏览器结果。
 

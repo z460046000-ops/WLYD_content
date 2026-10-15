@@ -17,6 +17,7 @@ function draftModel(draft, inspect = () => {}) {
     inspect(prompt)
     const value = prompt.stage === 'plan' ? { title: draft.title }
       : prompt.stage === 'extract' ? { facts: [], writingOutline: [] }
+      : prompt.stage === 'panorama-enrichment' ? { additions: [], reviewItems: [] }
       : prompt.stage === 'consistency-review' ? { reviewItems: [] }
       : { ...draft, sections: draft.sections.filter(section => section.key === prompt.chapter.key) }
     yield { type: 'text-delta', text: JSON.stringify(value) }
