@@ -64,7 +64,8 @@ test('组织维度由共享规划选择，任意业务维度可保留，两图�
     if (prompt.stage === 'plan') assert.ok(prompt.panoramaRules['business-architecture'].organization.examplesOnly)
     if (prompt.stage === 'write' && prompt.chapter.key.endsWith('-map')) {
       assert.deepEqual(prompt.organization.dimensions, ['交接前', '交接中', '交接后'])
-      assert.ok(prompt.chapterRule.validate.some(item => item.includes('价值机制')))
+      assert.ok(prompt.chapterRule.write.length > 0)
+      assert.equal(Object.hasOwn(prompt.chapterRule, 'validate'), false)
     }
     return response(prompt)
   })

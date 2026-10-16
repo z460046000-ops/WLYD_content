@@ -70,8 +70,8 @@ test('八条章节流水线共享规划、原文与模型额度，乱序完成�
       if (prompt.stage === 'extract' && prompt.chapter.key === 'technical-platform' && !extractionFailures++) throw new Error('temporary extract failure')
       if (prompt.stage === 'write' && prompt.chapter.key === 'solution' && !writeFailures++) throw new Error('temporary write failure')
       if (prompt.stage === 'write') {
-        assert.match(prompt.task, /大段原文先概括关键意思/u)
-        assert.ok(prompt.styleRules.principles.some(item => item.includes('简短小标题或短语')))
+        assert.match(prompt.task, /先概括材料/u)
+        assert.ok(prompt.styleRules.some(item => item.includes('小标题或短语')))
         assert.ok(prompt.extraction.facts.length)
         assert.equal(prompt.plan.choices.businessMode.value, 'current-state')
         assert.equal(prompt.plan.choices.trendFramework.value, 'pest')

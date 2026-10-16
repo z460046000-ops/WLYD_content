@@ -11,6 +11,7 @@ import { readJson } from './persistence.js'
 import { routeFacts, internalNarrative } from './evidence-policy.js'
 import { reviewAssembly } from './review.js'
 import { enrichPanoramas } from './panorama.js'
+import { stageContext, chapterContext } from './prompts.js'
 import { list, strings, writeJson, createRequester, commonContext, chapterPlan, citedEvidence, itemBatches, uniqueFacts, checkedFacts } from './context.js'
 export { normalizePlan, applyPlanTitles } from './plan-model.js'
 const SOLUTION_WEIGHTS = { solution: 0.15, 'business-architecture': 0.18, 'product-architecture': 0.17, 'scenario-solution': 0.5 }
@@ -143,8 +144,6 @@ function linksFromPlan(plan, sections, outline) {
   return links
 }
 
-const writingContract = '只写当前章节，标题与 key 使用目录给定值。事实逐段 supportMode=sourced，附原文 evidence:[{id,quote}]；引文逐字复制至少六字，含数字的正文须在引文中支持相同数字。合理推演用条件语气并标 supportMode=candidate，不能冒充客户事实、已具备能力、正式政策或效果承诺。保留所有有价值的相关材料，extractQuestions 只是重点。大段原文先概括关键意思，再用简短小标题或短语引出论点，并以短句解释动作、因果、条件和边界；不得把长原文直接堆入正文，也不能为短语化丢掉事实与引文。业务章采用所选一种写法，趋势章只用所选一种框架。对外读者不能把厂商内部研发问题、经营判断当客户痛点。问题与方案以共享规划 ID 对应；每个段落给 planRefs:{capabilityIds,scenarioIds,problemIds,trendIds}。只有真正缺失的事实进入 gaps；关系不足在 reviewItems 中说明，正文可保留待确认候选。'
-
 /** The same body boundary applies to initial writing, panorama additions and review repairs. */
 function validateBodyBlock(block, facts, rule, supplied) {
   if (internalNarrative(block.text)) throw new Error('内部经营、研发、材料审核或组稿过程说明不进入正文')
@@ -198,11 +197,9 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
         plan, outline, node, ruleFingerprint: rules.fingerprint, chapterRule, common,
         model: { provider: state.modelSelection.provider, model: state.modelSelection.model,
           reasoningEffort: state.modelSelection.reasoningEffort } })
-      const base = { ...common, chapter: node, plan: scoped,
+      const base = { ...stageContext(common, 'write'), chapter: node, plan: scoped,
         ...(PANORAMA_ROLES.includes(node.roleId) ? { organization: scoped.chapterGuidance[0]?.organization } : {}),
-        chapterRule: { write: chapterRule.write || [], validate: chapterRule.validate || [], missing: chapterRule.missing || '',
-          contentPolicy: chapterRule.contentPolicy || {},
-          ...(chapterRule.modes?.[node.mode] ? { selectedMode: chapterRule.modes[node.mode] } : {}) },
+        chapterRule: chapterContext(chapterRule, node, 'write'),
         depthBudget: depthBudget(node, nodes, outline, rules.global.contentBalance),
         selectedDimensions: FRAMEWORK_DIMENSIONS[node.framework] || [] }
       try {
@@ -222,7 +219,7 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
         // An injected retrieval adapter must register new sources as well.
         for (const source of chapterEvidence) if (!evidence.some(row => row.id === source.id)) evidence.push(source)
         const onBatch = async () => { progress.status = 'extracting'; progress.extractAttempts++; await saveState() }
-        let extraction = saved?.extraction || await collectFacts({ request, common: { author: common.author, audience: common.audience }, node,
+        let extraction = saved?.extraction || await collectFacts({ request, common, node,
           rule: chapterRule, evidence: chapterEvidence, plan: scoped, onBatch,
           signal: exec.signal,
           onProgress: partial => writeJson(path.join(chapterDir, 'extraction-partial.json'), partial) })
@@ -244,7 +241,7 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
             progress.supplement = { questions: extraction.retrievalQueries, newEvidenceCount: added.length, newFactsCount: 0 }
             for (const source of added) if (!evidence.some(row => row.id === source.id)) evidence.push(source)
             if (added.length) {
-              const extra = await collectFacts({ request, common: { author: common.author, audience: common.audience }, node,
+              const extra = await collectFacts({ request, common, node,
                 rule: chapterRule, evidence: added, plan: scoped, round: 1, onBatch,
                 signal: exec.signal,
                 onProgress: partial => writeJson(path.join(chapterDir, 'supplement-partial.json'), partial) })
@@ -298,7 +295,6 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
             chapterTopics: organized.topics,
             extraction: { facts, writingOutline: strings(facts.map(fact => fact.topic || '本章相关内容')).map(topic => ({ topic })) },
             previousTopics: blocks.map(block => ({ id: block.id, navigationExcerpt: block.text.slice(0, 120) })), repairIssues, failedBlocks,
-            task: writingContract + '按 chapterTopics 组织本章，本批只写 facts 涉及的主题，最多四个段落，合并重复意思，不重复 previousTopics。服从 chapterRule.contentPolicy 的主体用途与职责；candidate 事实即使有背景引用，正文仍标 candidate，不能因附引文变成真实客户事实。引用仅从 facts.evidence.quote 中逐字选取，不能扩大到原文选段的邻近内容；选段上下文用于理解条件。仅写读者需要的业务内容，不讲检索、证据缺口、粗目录、章节安排或内部审阅过程。正文解释参与者、触发、用户动作、系统支撑、输出、价值和边界；小标题简短。两类全景分别承担业务流程与功能支撑职责，不在每批重写全章。事实不足时只可围绕 plan 有据能力写条件性的典型建议，不新增产品能力、客户事实或政策。failedBlocks 非空时只修这些被拒段落，其他已通过段落已保留，不重写它们；删除不必要的无据数字，不伪造引文。',
             schema: { sections: [{ key: node.key, title: node.title, blocks: [{ text: '完整主题正文', supportMode: 'sourced/candidate',
               ...(node.framework ? { dimension: 'selectedDimensions 中的一项，导语可省略' } : {}),
               ...(PANORAMA_ROLES.includes(node.roleId) ? { capabilityStatus: 'existing/pilot/planned/proposed/unknown', capabilityOwnership: 'self/third-party/customer/unknown' } : {}),
@@ -381,13 +377,13 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
   }
   const successful = results.filter(result => result.status === 'fulfilled' && result.value?.section).map(result => result.value)
   if (!successful.length) throw new Error(`全部章节未完成；已保留逐章提取、错误和运行记录：${state.chapters.find(item => item.error)?.error || '无有效正文'}`)
-  const enriched = await enrichPanoramas({ request, common: { author: common.author, audience: common.audience }, plan, outline,
+  const enriched = await enrichPanoramas({ request, common, plan, outline,
     rules, chapters: successful, evidence, dir, state, saveState, signal: exec.signal,
     validateBlock: validatePostWriteBlock,
     selectEvidence: sections => citedEvidence([...sections.flatMap(section => section.blocks), ...plan.capabilities], evidence) })
   const omitted = new Set(state.chapters.filter(row => row.status === 'omitted').map(row => row.key))
   const activeOutline = nodes.filter(node => !omitted.has(node.key)).map(({ children, ...node }) => node)
-  const review = await reviewAssembly({ request, common: { author: common.author, audience: common.audience }, plan, outline: activeOutline,
+  const review = await reviewAssembly({ request, common, plan, outline: activeOutline,
     sections: enriched.chapters.map(row => row.section), evidence, dir, state, saveState, signal: exec.signal, ruleFingerprint: rules.fingerprint,
     validateBlock: validatePostWriteBlock })
   const checked = validateDraft({ sections: review.sections, assemblyLinks: linksFromPlan(plan, review.sections, outline) }, evidence, outline, plan)

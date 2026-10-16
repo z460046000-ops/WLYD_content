@@ -2,9 +2,9 @@
 
 独立 DSH/Cordis 插件：导入材料、同步项目知识库，按规则生成可审阅的解决方案正文。当前输出 Markdown/JSON；HTML 编辑、架构图绘制、PPTX/PDF 导出尚未实现，不依赖旧插件或 HTML Anything。
 
-**当前源码版本为 0.6.0：补充材料用途筛选、面向客户的规划、主题组稿、局部失败保留及正文与审核分离。** 0.5.0 的后台作业、八路总并发、路由限流、去重与恢复继续保留。本轮没有真实生成，没有改动 RAG 库，也没有安装或重启日常 DSH；测试汇总与后续发布状态以 [测试记录](docs/test-record.md) 为准。源码修改不会自动更新安装版，升级需完整重启 DSH 并核对运行中的工具协议。遗留任务见 [待办](docs/backlog.md)。
+**当前源码为 0.7.0：精简逐章提取、撰写及复核提示词。** 0.6.0 的材料用途筛选、主题组稿、局部失败保留与独立审核继续保留。本机 [3081 测试环境](http://127.0.0.1:3081/)此前安装的是 0.6.0，日常 3080 此前保留 0.5.0；0.7.0 尚未打包安装，也未用真实模型生成。版本和验证边界见 [测试记录](docs/test-record.md)。源码修改不会自动更新安装版，升级需完整重启 DSH 并核对运行中的工具协议。遗留任务见 [待办](docs/backlog.md)。
 
-全局规则已更新到 **0.8.0**，旧 `planId` 的规则指纹不再匹配：升级后重新 `plan → confirm → generate`，可以复用原导入材料，不必重复上传。
+全局规则已更新到 **0.9.0**，旧 `planId` 的规则指纹不再匹配：升级 0.7.0 后重新 `plan → confirm → generate`，可以复用原导入材料，不必重复上传。
 
 ## 1. 项目、规则和插件在哪里
 
@@ -16,6 +16,8 @@
 | Cordis 组件 / 工具前缀 | `wlyd-material-knowledge-assembly` / `wlyd_assembly_*` |
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 日常安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
+| 本机最近核对的测试安装版 | `http://127.0.0.1:3081/`，profile 为 `wlyd-assembly-021-browser`（历史名称），0.6.0；升级前需重新核对运行状态 |
+| 最近打包的安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.6.0.tgz`；0.7.0 尚未打包 |
 | 历史安装包 / 校验 | `releases/` / `releases/SHA256SUMS` |
 | 运行产物 | **当前 DSH 会话工作区**的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
 
@@ -33,7 +35,8 @@ src/
 ├── convert.js       格式识别和文字转换
 ├── platform.js      后端账号、项目、知识库、上传和检索适配
 ├── retrieval.js     授权范围、查询、去重、按章选择与完整证据登记
-├── context.js       阶段规则投影、请求记录、分批、事实与引文选段
+├── context.js       请求记录、分批、事实与引文选段
+├── prompts.js       按模型阶段与章节角色投影必要提示词
 ├── facts.js         分批提取事实卡，按输入超限与有效输出耗尽分类处理
 ├── evidence-policy.js 事实主体、用途、假设身份和章节适配规则
 ├── generation.js    所有章节并行进入取证、事实卡和分段撰写，按目录合稿
@@ -45,13 +48,19 @@ src/
 ├── rules.js         加载模板、章节角色与规则指纹
 └── schema.js        DSH 工具标准 JSON Schema
 rules/
-├── global.json      所有方案共用的取材、组稿与合稿必检规则（0.8.0）
+├── global.json      所有方案共用的取材、关联及阶段任务规则（0.9.0）
 ├── style.json       短标题、短语概括、短句说明等共用写法
 ├── templates/       各方案类型的默认目录，目前提供 presales-solution
 └── chapters/        按角色定义 extractQuestions / write / validate / missing
 ```
 
 模板定义目录，章节角色定义取材和写法，全局规则定义共同纪律；产品事实来自用户材料和授权知识库。goodcase 只学习方法，不作为本次客户、产品能力、数字或奖项证据。`extractQuestions` 是重点线索，不是白名单。全景规则的学习依据见 [全景学习记录](docs/panorama-rule-evidence.md)。
+
+### 0.7.0 提示词组织
+
+- `rules/global.json` 的 `sharedRules` 集中维护证据、事实边界、**产品能力→场景→客户问题→相关趋势**关联、能力状态及两类全景职责；`stageContracts` 分别定义规划、提取、撰写、全景补充、合稿检查和局部修正任务。`rules/style.json` 只维护共用表达方式。
+- `rules/chapters/*.json` 保留各章节特有的提取重点、写法、校验及材料用途；业务现状/需求挑战、PEST/管理业务技术仍按确认选项二选一。`src/prompts.js` 在每次独立模型请求中只送当前阶段需要的共用规则和本章差异，程序继续读取完整章节规则做校验与事实筛选。
+- 固定九章、相同模拟证据与 31 次模拟请求下，序列化请求总量从 135356 降至 102306 个 UTF-16 字符（约降 24.4%），撰写阶段约降 47.2%；证据文本量和调用数相同。该结果只说明请求体缩短，不等于 token、真实耗时或成稿质量收益；详见 [测试记录](docs/test-record.md)。
 
 ### 0.6.0 的五项内容调整
 
@@ -175,6 +184,16 @@ flowchart TD
 
 自定义 `roleId=custom` 需说明 `goal`、`audience`、`questions`、`evidenceScope`、`acceptance`。目前可恢复失败或中断任务，尚无任意指定成功章的对话扩写/重写入口。
 
+### 只测试两类全景内容
+
+在同一工作区选择已有项目或导入材料，新建会话后发送：
+
+> 请只使用 wlyd_assembly_* 工具，基于我选择的项目知识库和已有材料测试全景内容。作者身份是售前解决方案顾问，读者是客户业务负责人；自定义目录只保留业务架构全景（key/roleId=business-architecture）、产品功能全景（key/roleId=product-architecture）和重点业务场景（key=scenarios，roleId=scenario-solution），均设为必需。先调用 outline action=plan，展示粗大纲、问题与产品能力及场景的对应主线，等待我确认。
+
+看过大纲后回复“我确认这个大纲和主线，请确认该版本并提交一次生成”。取得 runId 后用 status 查询，勿重复 generate。升级改变规则指纹，旧规划必须重建；已有导入可复用，但须使用原工作区。
+
+检查业务全景是否讲清角色与业务流程、产品全景是否讲清功能支撑及边界、后文重点场景能否在两图内容中定位，以及已具备/规划/第三方能力是否区分。成稿看 report.md，内部问题看 review.md，逐章检索过程看 chapters/<key>/retrieval.json。partial_draft 或必需章未完成不算完整通过。当前验收的是文字底稿，尚无实际架构图绘制。
+
 ## 4. 运行产物
 
 ```text
@@ -209,15 +228,15 @@ artifacts/material-knowledge-assembly/runs/<runId>/
 
 ## 5. 安装与配置
 
-Node.js 22+、DSH 和内容中台账号为前提。以下为 0.6.0 的发布操作示例，本轮源码调整不表示已经打包或安装；历史 0.5.0 安装记录保留在测试记录中：
+Node.js 22+、DSH 和内容中台账号为前提。以下命令用于当前 0.7.0 源码的后续打包与安装；本轮尚未执行，已安装的 0.6.0 历史记录见测试记录：
 
 ```bash
 npm ci
 npm run check
 npm test
 npm pack --pack-destination releases
-shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.6.0.tgz
-dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assembly-0.6.0.tgz
+shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.7.0.tgz
+dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.7.0.tgz"
 ```
 
 更换插件版本后完整重启对应 DSH 并刷新页面，再核对插件版本与组件“运行中”；包版本更新不代表旧进程中的工具定义已刷新。安装验证记录见项目 memory.md，不能把加载成功当成真实组稿验收。
@@ -248,7 +267,7 @@ dsh plugin --profile web add /absolute/path/to/wlyd-dsh-material-knowledge-assem
 ## 6. 仍未打通与验收边界
 
 - 本版新增的是本机任务去重、检查点与显式恢复；DSH 退出不会继续后台生成。没有云端队列、远程调度、任意成功章重写或跨设备自动接续。旧版任务没有新版检查点时需重新规划启动。
-- 尚未实测 0.5.0 的真实成稿质量、429 策略与低思考是否被网关执行、输入下降和耗时收益；不承诺固定提速比例。打包、安装与自动化实际结果见测试记录。
+- 尚未实测 0.7.0 的真实成稿质量、实际 token 与耗时收益，也未核对低思考是否被网关执行；不承诺固定提速比例。打包、安装与自动化实际结果见测试记录。
 - 知识库关联候选和本地词面选段可能漏材料；原文回读、Wiki/图谱和公开检索未接，缺少来源的政策不能冒充检索结果。
 - UTF-8 文本、Markdown、DOCX、文字 PDF、PPTX、XLSX、ZIP 支持文字提取；不保证图表、图片文字、版式完整。图片/扫描件 OCR、DMG、旧 Office、音视频、链接抓取未接。
 - 单批 100 文件、单文件 500 MB；ZIP 最多 1000 项/共 1 GB。入口限额不证明任意格式 500 MB 全链路可用，真实大文件链路待验收。

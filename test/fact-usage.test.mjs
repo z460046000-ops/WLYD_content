@@ -97,7 +97,7 @@ test('提取问题非白名单，新增用途元数据与其他有价值事实�
     rule: { extractQuestions: ['仅重点关注记录管理'], contentPolicy: { purposes: ['capability', 'constraint'] } }, evidence: original, plan: {},
     request: async prompt => {
       calls++
-      assert.match(prompt.task, /不是白名单/u)
+      assert.match(prompt.task, /非白名单/u)
       assert.match(prompt.schema.facts[0].subject, /vendor-internal/u)
       assert.equal(prompt.chapterRule.contentPolicy.purposes.includes('constraint'), true)
       return { facts: [fact('依赖第三方模型', { subject: 'product', purpose: 'constraint', capabilityOwnership: 'third-party', topic: '模型集成' })] }

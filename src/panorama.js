@@ -3,6 +3,7 @@ import path from 'node:path'
 import { flattenOutline } from './rules.js'
 import { validateDraft, PANORAMA_ROLES } from './content.js'
 import { abortError } from './scheduler.js'
+import { stageContext, chapterContext } from './prompts.js'
 import { atomicJson as writeJson, readJson } from './persistence.js'
 
 const list = value => Array.isArray(value) ? value : []
@@ -133,11 +134,13 @@ export async function enrichPanoramas({ request, common, plan, outline, rules, c
       }
       return result
     }
-    draft = await request({ ...common, evidence: selected.map(item => ({ id: item.id, content: item.content })),
+    draft = await request({ ...stageContext(common, 'panorama-enrichment'), evidence: selected.map(item => ({ id: item.id, content: item.content })),
       stage: 'panorama-enrichment', plan: scopedPlan, outline, sections: relevantSections,
       targetChapters: targets.map(section => byKey.get(section.key)), coverageBefore,
-      panoramaRules: Object.fromEntries(targets.map(section => [byKey.get(section.key).roleId, rules.chapters[byKey.get(section.key).roleId]])),
-      task: '只做一轮全景内容补充。查看后文实际展开的重点场景及其他章节，检查两类全景是否遗漏上级业务节点、关键产品支撑或必要价值解释。优先复用已有节点承接；若原稿已充分覆盖，返回 additions:[]。只对 targetChapters 追加必要正文，不重写或删除原段落，不更改标题、维度选择、目录或共享 ID，不重复细节。按本次业务的读者、问题与场景动态组织，不强套三层或五层。补充解释问题→使用者与动作→支撑能力→产出和价值机制，两类全景互相可定位，具体操作仍留在场景章。节点归类、流程、依赖和支撑关系分别说明，不因位置推定关系。每段复用已存在的 planRefs；有据事实给逐字引文，推演标 supportMode=candidate 并用条件语气。标明能力状态与归属，正文说明第三方、客户已有、试点和规划，不能升级为自有或已具备。引用不能用来证明不相干能力。coverageBefore 只是 ID 覆盖提示，是否有必要补充仍按正文判断；关联不足只列 reviewItems，不阻断成稿。',
+      panoramaRules: Object.fromEntries(targets.map(section => {
+        const node = byKey.get(section.key)
+        return [node.roleId, chapterContext(rules.chapters[node.roleId], node, 'panorama-enrichment')]
+      })),
       schema: { additions: [{ key: 'targetChapters 中的 key', blocks: [{ text: '必要补充正文', supportMode: 'sourced 或 candidate',
         capabilityStatus: 'existing/pilot/planned/proposed/unknown 选一', capabilityOwnership: 'self/third-party/customer/unknown 选一',
         evidence: [{ id: '原始证据 ID', quote: '逐字原文' }],

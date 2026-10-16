@@ -5,7 +5,8 @@ import { loadRules, validateOutline, requestedModes, applyModes } from './rules.
 import { normalizePlan, applyPlanTitles } from './plan-model.js'
 import { createRetrieval } from './retrieval.js'
 import { collectFacts } from './facts.js'
-import { createRequester, writeJson, citedEvidence } from './context.js'
+import { createRequester, writeJson, citedEvidence, commonContext } from './context.js'
+import { stageContext } from './prompts.js'
 import { runPath, clone, sha256, sourceEvidence } from './store.js'
 
 export const planHash = document => sha256(JSON.stringify(document))
@@ -27,16 +28,15 @@ export async function planOutline({ client, llm, args, exec }) {
   try {
     const request = await createRequester({ llm, exec, state, saveState })
     const author = identity(args)
+    const common = commonContext(rules, args)
     const evidence = await retrieval.discover({ light: true, context: [author.author_identity, author.domain, author.objective].filter(Boolean).join('；') })
     if (!evidence.length) throw new Error('没有宏观规划所需的可核对资料，请检查知识库或导入材料')
-    const facts = await collectFacts({ request, common: { author, audience: author.audience },
+    const facts = await collectFacts({ request, common,
       node: { key: 'overview', title: '产品与业务宏观了解', roleId: 'custom' }, rule: {}, evidence, plan: {},
       onBatch: async () => {} })
     if (!facts.facts.some(row => row.supportMode === 'sourced')) throw new Error('宏观规划没有取得有据事实，请检查材料后再规划')
-    const raw = await request({ stage: 'plan', author, audience: author.audience, outline, requestedModes: requested,
-      factUsagePolicy: rules.global.fact_usage_policy,
+    const raw = await request({ ...stageContext(common, 'plan'), author, stage: 'plan', outline, requestedModes: requested,
       evidence: citedEvidence(facts.facts, evidence), facts: facts.facts,
-      task: '从作者身份、领域、写作目标和读者出发，只提出供用户确认的粗目录，不写正文或详细全景设计。保留输入目录 key、roleId、顺序及层级，标题可自然近义改写；每章一句面向读者的内容目的和一条具体检索方向。“粗目录、不写正文、下阶段取证、待用户确认”只是本阶段控制指令，不得出现在方案标题、章节标题、focus或organization中。只挑最多三项有原文的核心产品能力，先确定其真实支持的业务动作与场景，再对应客户问题及相关趋势，最多三条主线；场景没有有据能力不得成立，厂商定位、竞争、获客、缺少案例或内部研发等自身问题不得反推为客户需求或行业趋势。问题无客户证据或属于典型推演时，即使引用产品材料也必须supportMode=candidate、scope=typical；引文有效不代表主体或用途适合。各项标明subject和purpose，客户事实、产品能力、行业背景与公司背书分别取证。趋势不强凑，能力状态与归属未知就写unknown。选择业务现状/需求挑战和PEST/管理业务技术各一种，服从用户指定。业务全景说明角色、流程与交接，产品全景说明功能支撑与能力边界，具体组织维度留给章节取证后决定。无正向真实案例不规划负面案例说明，企业介绍不写知识库目录与维护入口。',
       schema: { title: '方案标题', businessMode: { value: 'current-state/needs-challenges', reason: '简短理由' },
         trendFramework: { value: 'pest/management-business-technology', reason: '简短理由' },
         capabilities: [{ id: 'cap-1', text: '核心能力', subject: 'product', purpose: 'capability', capabilityStatus: 'existing/pilot/planned/proposed/unknown', capabilityOwnership: 'self/third-party/customer/unknown', evidence: [{ id: '原文 ID', quote: '短的逐字引文' }] }],

@@ -5,6 +5,7 @@ import { flattenOutline } from './rules.js'
 import { validateDraft } from './content.js'
 import { mapConcurrent } from './scheduler.js'
 import { citedEvidence, itemBatches, list, strings, writeJson } from './context.js'
+import { stageContext } from './prompts.js'
 
 export const REVIEW_CHECKS = ['problem-solution', 'capability-evidence', 'scenario-panorama', 'trend-construction', 'contradictions-orphans']
 const REVIEW_VERSION = 3
@@ -128,11 +129,10 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
       records.push(record); await persist(); return record
     }
     try {
-      const audit = await request({ ...common, stage: 'consistency-review', reviewScope: job.scope, round,
+      const audit = await request({ ...stageContext(common, 'consistency-review'), stage: 'consistency-review', reviewScope: job.scope, round,
         evidence: inputEvidence, sections: job.blocks, relationshipIndex: job.index, relationships: job.relationships,
         boundaryConflicts: job.boundaryConflicts, plan: relationPlan,
         confirmedOutline: outline, scopeNote: job.note || '本批完整正文逐段核对，包含事实边界和语义矛盾；本章不承担的跨章项可说明不适用，由主线批次联合检查。',
-        task: '必须逐项检查 checks 中所有项目，并覆盖本批每个完整段落和 relationships 的每条关系：问题是否有方案回应，能力是否有证据，场景是否在两类全景对应，趋势是否关联建设内容，有无矛盾、无关堆砌或孤立内容。核对引用语义、客户与厂商内部问题、试点规划和第三方边界。boundaryConflicts 是结构化差异，不能忽略；即使为空仍检查正文语义矛盾。只凭导航索引不能判跨章通过。未知写 needs_review。范围确不涉及某项时可 not_applicable 并说明理由；关系批次涉及的项目不能跳过。候选不能当客户事实。只返回短审核结果；不重写正文。',
         checks: REVIEW_CHECKS,
         schema: { checks: [{ id: '检查项目 ID', status: 'pass/needs_review/not_applicable', reason: '对应段落与具体理由', blockIds: ['当前范围段落 ID'] }],
           reviewItems: ['具体问题'], repairNeeded: false } })
@@ -184,9 +184,8 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
       const repairFingerprint = fingerprint({ reviewVersion: REVIEW_VERSION, ruleFingerprint, blocks, sources, common, outline, plan,
         issues: audit.checks.filter(row => row.status === 'needs_review'), reviewItems: audit.reviewItems })
       const cachedResponse = repairCache.get(repairFingerprint)
-      const response = cachedResponse || await request({ ...common, stage: 'relationship-repair', reviewScope: job.scope, evidence: sources,
+      const response = cachedResponse || await request({ ...stageContext(common, 'relationship-repair'), stage: 'relationship-repair', reviewScope: job.scope, evidence: sources,
         blocks, issues: audit.checks.filter(row => row.status === 'needs_review'), reviewItems: audit.reviewItems,
-        task: '只修正当前已有段落的前后关联或事实边界，最多两段。保持 id、章节、原有事实与候选标签。不能新增能力、数字、承诺或客户事实，不能删除段落；无法有据修正时不修改并说明原因。只用本次 evidence 引文。',
         schema: { replacements: [{ id: '现有段落 ID', text: '修正正文', supportMode: 'sourced/candidate', evidence: [{ id: '原文 ID', quote: '逐字原文' }], planRefs: {} }], reviewItems: [] } })
       const next = structuredClone(current), changed = []
       if (!Array.isArray(response.replacements) || response.replacements.length > 2) throw new Error('局部修正格式或数量无效')

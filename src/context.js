@@ -11,10 +11,7 @@ export const NON_REPEATABLE = new Set(['MODEL_CONTEXT_LIMIT', 'MODEL_OUTPUT_LIMI
 export function commonContext(rules, args) {
   return { author: { identity: args.author_identity || '售前方案作者', domain: args.domain || '', objective: args.objective || '编制产品解决方案' },
     audience: args.audience || '首次接触方案的企业客户',
-    evidenceRules: rules.global.evidence, writingRules: rules.global.writing,
-    styleRules: rules.style, factUsagePolicy: rules.global.fact_usage_policy,
-    assemblyLogic: { traceability: rules.global.assemblyLogic.traceability,
-      evidenceBoundary: rules.global.assemblyLogic.evidenceBoundary } }
+    promptPolicy: { global: rules.global, style: rules.style } }
 }
 
 export async function createRequester({ llm, exec, state, saveState }) {
