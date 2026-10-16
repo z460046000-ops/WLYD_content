@@ -92,3 +92,40 @@ test('合稿审核指纹明确绑定规则版本，即使只传作者读者也�
   const saved = JSON.parse(await readFile(path.join(options.dir, 'consistency-review.json'), 'utf8'))
   assert.equal(saved.ruleFingerprint, 'rules-second')
 })
+
+test('全景新增段被用途回调拒绝时保留原稿并记录校验事项', async () => {
+  const options = await fixture(async () => addition())
+  const original = structuredClone(options.chapters)
+  const seen = []
+  options.validateBlock = (candidate, chapterKey) => {
+    seen.push([chapterKey, candidate.text])
+    throw new Error('本章用途不接受此补充')
+  }
+  const result = await enrichPanoramas(options)
+  assert.deepEqual(result.chapters, original)
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0][0], 'business')
+  assert.equal(options.state.panoramaEnrichment.status, 'partial')
+  assert.ok(result.validationIssues.some(item => item.includes('本章用途不接受此补充')))
+  assert.ok(options.state.chapters.every(row => row.path.endsWith('/chapter.json')))
+})
+
+test('全景缓存追加段仍须通过用途回调，拒绝后不发新请求且恢复原稿指针', async () => {
+  let calls = 0
+  const options = await fixture(async () => { calls++; return addition() })
+  const original = structuredClone(options.chapters)
+  await enrichPanoramas(options)
+  assert.equal(options.state.chapters[0].path, 'chapters/business/enriched.json')
+  options.validateBlock = (candidate, chapterKey) => {
+    assert.equal(chapterKey, 'business')
+    assert.match(candidate.text, /交接核对节点/u)
+    throw new Error('缓存段落用途不符')
+  }
+  const result = await enrichPanoramas(options)
+  assert.equal(calls, 1)
+  assert.deepEqual(result.chapters, original)
+  assert.equal(options.state.panoramaEnrichment.status, 'partial')
+  assert.equal(options.state.panoramaEnrichment.additions, 0)
+  assert.ok(result.validationIssues.some(item => item.includes('缓存段落用途不符')))
+  assert.equal(options.state.chapters[0].path, 'chapters/business/chapter.json')
+})

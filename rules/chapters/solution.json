@@ -1,6 +1,6 @@
 {
   "roleId": "solution",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "dependsOnRoles": [
     "business-challenges"
   ],
@@ -27,5 +27,27 @@
     "价值不升级成无依据效果承诺",
     "总体思路、架构内容与典型场景均承担明确任务，不能把标题或功能列表当成完整方案"
   ],
-  "missing": "先检索能力证据；仍不足时保留有据内容，并把推断的场景或建设方向标为待确认，允许继续组稿"
+  "missing": "先检索能力证据；仍不足时保留有据内容，并把推断的场景或建设方向标为待确认，允许继续组稿",
+  "contentPolicy": {
+    "subjects": [
+      "product",
+      "customer",
+      "industry",
+      "unknown"
+    ],
+    "purposes": [
+      "capability",
+      "business-problem",
+      "constraint",
+      "unknown"
+    ],
+    "excludeSubjects": [
+      "vendor-internal"
+    ],
+    "excludePurposes": [
+      "internal"
+    ],
+    "allowCandidate": true,
+    "roleFocus": "解释总体目标、方案路径及重点场景组合；具体做法由子章展开"
+  }
 }

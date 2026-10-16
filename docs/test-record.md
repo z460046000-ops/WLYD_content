@@ -1,5 +1,51 @@
 # 测试记录
 
+## 2026-10-16：0.6.0 用途筛选、主题组稿与正文审核分离
+
+### 依据与范围
+
+用户审阅实际运行 `ce84d35a-1e2f-417c-8392-81694c75bd6d` 的报告后确认调整插件。该旧稿的缺章、内部叙事和长篇待审说明是本轮改造依据，不能当成 0.6.0 实测结果。
+
+- 用途分类复用 extract，请求数不增加独立串行分类；事实卡和章节规则保留主体、用途、主题及候选边界，RAG 原件与召回证据不改动。
+- 规划围绕有据能力组织场景、客户问题和趋势，避免内部经营问题冒充客户痛点及规划话术进入标题；未知用途不作为已核验客户事实，公司/案例要求明确对应用途。
+- 写前合并重复主题与引用，无效段落有界局部修正，保留通过段落；失败批或未修完章节为 partial。显式可选且无适配正向内容可 omitted，必需或失败章保留占位。
+- report.md 输出正文；review.md/json 独立保存按章去重的内部审核，report.json 及 review.json.raw 保留原始记录。report、run 和 status 对齐部分稿、partial/omitted 与审核路径。
+- 全局规则 0.8.0 改变规划指纹，旧规划须重新 plan/confirm；可以复用既有导入材料。
+
+### 验证记录
+
+Node.js 22.22.2：`npm test` **140/140 通过，0 失败、0 取消**；`npm run check` **21 个模块通过**；`git diff --check` 通过。模型和后端均为测试替身，覆盖以下行为：
+
+- 用途与主体归一化、章节策略、未知内容候选降级、案例/公司用途要求及原始证据保留。
+- 规划污染过滤、稳定主线和候选身份；主题组织、有效段保留、局部失败与恢复边界。
+- 动态章节层级、必需章占位、可选省略、正文审核分离、跨类别去重且 raw 留存。
+- 明确否定“不能作为已交付”不误判为承诺，独立正向承诺、无据数字和无效引文仍拒绝。
+- report/run/status 真实状态一致、审核路径落盘，以及已有后台作业、权限、模型与转换回归。
+- 全景追加、合稿替换和缓存结果同样遵守本章用途与引文边界；候选企业内容、内部说明及被排除事实的邻近引文均不能借后置修正进入正文，拒绝时保留原稿。
+
+### 修改文件及原因
+
+| 文件 | 原因 |
+|---|---|
+| `src/evidence-policy.js`（新增）、`src/context.js`、`src/facts.js` | 同次提取保留主体、用途、时效、能力边界与主题；按章路由且不丢原始证据 |
+| `src/plan-model.js`、`src/planning.js` | 客户视角组织主线，保留假设身份并清除规划控制话术 |
+| `src/generation.js` | 主题组稿、有效段落保留、局部修正、缺组篇幅检查及统一后置正文边界 |
+| `src/panorama.js`、`src/review.js` | 新增、替换及缓存内容继续校验用途；失败保留原稿 |
+| `src/content.js`、`src/workflow.js`、`src/tasks.js` | 正文审核分离，必需占位、可选省略及运行状态一致 |
+| `rules/global.json` | 通用取材、客户叙事、主题撰写和完整性规则升至 0.8.0 |
+| `rules/chapters/business-challenges.json`、`policy-trends.json` | 限定客户问题、行业趋势用途及候选边界 |
+| `rules/chapters/business-architecture.json`、`product-architecture.json` | 区分业务流程全景与产品支撑全景的职责 |
+| `rules/chapters/solution.json`、`scenario-solution.json`、`technical-platform.json`、`delivery-service.json` | 配置各自取材用途、主题与事实边界，保持模板可扩展 |
+| `rules/chapters/company-profile.json`、`customer-cases.json` | 只接受对应用途的有据内容；无正向案例时按可选规则省略 |
+| `test/fact-usage.test.mjs`、`planning-purpose.test.mjs`、`generation-content-policy.test.mjs`、`report-structure.test.mjs`（新增） | 验证本轮材料、规划、部分成稿与正文输出行为 |
+| `test/core.test.mjs`、`generation.test.mjs`、`panorama-resume.test.mjs`、`review-batching.test.mjs` | 更新有明确用途的测试材料，覆盖缺组、后置污染和缓存回归 |
+| `package.json`、`package-lock.json` | 源码版本同步 0.6.0，新增模块纳入语法检查 |
+| `README.md`、`docs/architecture.md`、`docs/backlog.md`、`docs/test-record.md`、`memory.md` | 记录架构、规则位置、实现与验证边界，保留历史部署信息 |
+
+### 未验证和发布边界
+
+本轮没有真实模型生成，没有改动 RAG 库，没有安装或重启日常 DSH；不宣称已打包发版或获得耗时收益。分类标签、语义适配、披露权限、客户问题与方案关联、企业/案例质量仍须真实材料验收。partial 恢复可复用有效提取，但本章写作会重写，尚非失败批独立续写。历史 0.5.0 包、安装及实测记录完整保留如下。
+
 ## 2026-10-15：0.5.0 后台作业、恢复与耗时优化
 
 ### 依据与范围

@@ -1,6 +1,6 @@
 {
   "roleId": "business-challenges",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "extractQuestions": [
     "目标客户或典型用户是谁",
     "哪个流程或工作场景发生问题",
@@ -12,7 +12,8 @@
     "围绕客户业务展开主要主题，每个主题写清场景、参与者、流程、表现、原因和影响，不能仅列几个短痛点",
     "同类主题合并，数量按材料和关注点决定；有价值的其他材料仍可纳入",
     "简要指出对应后续场景，本章不重复解决方案的具体操作步骤",
-    "本章正文约占全篇 15–30%，为软目标；内容深度优先，不重复凑字数"
+    "本章正文约占全篇 15–30%，为软目标；内容深度优先，不重复凑字数",
+    "仅用客户侧证据陈述已发生事实；行业典型或由产品能力推演的问题即使有引文也保持待确认假设，不把供应方缺案例、定位或信任问题写成客户痛点"
   ],
   "validate": [
     "客户事实有客户来源",
@@ -46,5 +47,25 @@
         "对应的后续方案场景"
       ]
     }
+  },
+  "contentPolicy": {
+    "subjects": [
+      "customer",
+      "industry",
+      "unknown"
+    ],
+    "purposes": [
+      "business-problem",
+      "constraint",
+      "unknown"
+    ],
+    "excludeSubjects": [
+      "vendor-internal"
+    ],
+    "excludePurposes": [
+      "internal"
+    ],
+    "allowCandidate": true,
+    "roleFocus": "解释客户流程、可观察表现与影响，并衔接后续可落地场景；本章不展开产品操作"
   }
 }

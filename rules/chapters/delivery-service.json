@@ -1,8 +1,39 @@
 {
   "roleId": "delivery-service",
-  "version": "0.1.0",
-  "extractQuestions": ["实施范围和交付阶段是什么", "每一阶段由谁负责、交付物和验收条件是什么", "培训、运营支持和响应边界有何正式约定"],
-  "write": ["仅在项目目录新增本章时使用", "按阶段、责任、交付物和验收条件组织，不将服务愿景写成合同承诺"],
-  "validate": ["交付周期、SLA、服务窗口和结果承诺有合同或本次资料依据", "说明客户与供应方各自的前置责任"],
-  "missing": "缺实施范围或服务契约时列待确认事项，不编造周期和保障等级"
+  "version": "0.2.0",
+  "extractQuestions": [
+    "实施范围和交付阶段是什么",
+    "每一阶段由谁负责、交付物和验收条件是什么",
+    "培训、运营支持和响应边界有何正式约定"
+  ],
+  "write": [
+    "仅在项目目录新增本章时使用",
+    "按阶段、责任、交付物和验收条件组织，不将服务愿景写成合同承诺"
+  ],
+  "validate": [
+    "交付周期、SLA、服务窗口和结果承诺有合同或本次资料依据",
+    "说明客户与供应方各自的前置责任"
+  ],
+  "missing": "缺实施范围或服务契约时列待确认事项，不编造周期和保障等级",
+  "contentPolicy": {
+    "subjects": [
+      "product",
+      "customer",
+      "company",
+      "unknown"
+    ],
+    "purposes": [
+      "capability",
+      "constraint",
+      "unknown"
+    ],
+    "excludeSubjects": [
+      "vendor-internal"
+    ],
+    "excludePurposes": [
+      "internal"
+    ],
+    "allowCandidate": true,
+    "roleFocus": "说明交付范围、责任、阶段及验收条件；建议与既有合同承诺区分"
+  }
 }

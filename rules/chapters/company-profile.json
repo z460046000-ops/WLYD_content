@@ -1,8 +1,38 @@
 {
   "roleId": "company-profile",
-  "version": "0.1.0",
-  "extractQuestions": ["公司正式简介和业务范围是什么", "生态合作与服务网络有哪些可公开材料", "资质、奖项的名称、颁发方、日期和有效性是什么"],
-  "write": ["简介、生态和资质分层表达", "只选与本方案相关且获准公开的背书"],
-  "validate": ["名称、数量、荣誉和年份可核对", "不把旧方案公司资料当成本项目公司事实"],
-  "missing": "缺证据的条目省略或标待补，不拿品牌套话填满"
+  "version": "0.2.0",
+  "extractQuestions": [
+    "公司正式简介和业务范围是什么",
+    "生态合作与服务网络有哪些可公开材料",
+    "资质、奖项的名称、颁发方、日期和有效性是什么"
+  ],
+  "write": [
+    "简介、生态和资质分层表达",
+    "只选与本方案相关且获准公开的背书",
+    "内部知识库目录、材料维护人、新员工学习和Agent接入指引均不作为企业简介、生态或资质证据"
+  ],
+  "validate": [
+    "名称、数量、荣誉和年份可核对",
+    "不把旧方案公司资料当成本项目公司事实"
+  ],
+  "missing": "只保留有据的正式简介、生态或资质；没有适配事实则留内部待补项，不以知识库目录、维护指引或品牌套话填充正文",
+  "contentPolicy": {
+    "subjects": [
+      "company",
+      "unknown"
+    ],
+    "purposes": [
+      "company-profile",
+      "unknown"
+    ],
+    "excludeSubjects": [
+      "vendor-internal"
+    ],
+    "excludePurposes": [
+      "internal"
+    ],
+    "allowCandidate": false,
+    "requireKnownPurpose": true,
+    "roleFocus": "仅写正式简介、生态合作和资质荣誉；不写知识库目录、维护信息或Agent接入说明"
+  }
 }

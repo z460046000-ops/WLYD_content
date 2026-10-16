@@ -17,7 +17,9 @@ function draftModel(draft, inspect = () => {}) {
     const prompt = JSON.parse(request.messages[0].content[0].text)
     inspect(prompt)
     const value = prompt.stage === 'plan' ? { title: draft.title }
-      : prompt.stage === 'extract' ? { facts: prompt.evidence.map(source => ({ text: source.content, evidence: [{ id: source.id, quote: source.content.slice(0, 100) }] })), writingOutline: [] }
+      : prompt.stage === 'extract' ? { facts: prompt.evidence.map(source => ({ text: source.content,
+        ...(source.content.includes('客户需要统一维护线索状态') ? { subject: 'customer', purpose: 'business-problem', scope: 'customer' } : {}),
+        evidence: [{ id: source.id, quote: source.content.slice(0, 100) }] })), writingOutline: [] }
       : prompt.stage === 'panorama-enrichment' ? { additions: [], reviewItems: [] }
       : prompt.stage === 'consistency-review' ? completeAudit()
       : { ...draft, sections: draft.sections.filter(section => section.key === prompt.chapter.key) }

@@ -16,8 +16,10 @@ export function taskProgress(state) {
   const chapters = state.chapters || []
   return { total: chapters.length || state.expectedChapters || 0,
     completed: chapters.filter(row => row.status === 'completed').length,
+    partial: chapters.filter(row => row.status === 'partial').length,
+    omitted: chapters.filter(row => row.status === 'omitted').length,
     failed: chapters.filter(row => row.status === 'failed').length,
-    pending: chapters.length ? chapters.filter(row => !['completed', 'failed', 'cancelled'].includes(row.status)).length : state.expectedChapters || 0,
+    pending: chapters.length ? chapters.filter(row => !['completed', 'partial', 'omitted', 'failed', 'cancelled'].includes(row.status)).length : state.expectedChapters || 0,
     cancelled: chapters.filter(row => row.status === 'cancelled').length,
     remainingUnit: '章节节点（不是预计时间）' }
 }
@@ -43,7 +45,8 @@ export function createTaskService({ jobs, client, llm, execute = assemble, persi
   }
   const query = async (runId, exec) => observe(await status({ client, runId, agent: exec.agent, signal: exec.signal }), exec)
   const summary = state => ({ runId: state.runId, run_id: state.runId, status: state.status, jobId: state.jobId || null,
-    progress: taskProgress(state), ...(state.reportPath ? { reportPath: state.reportPath, jsonPath: state.jsonPath } : {}),
+    progress: taskProgress(state), ...(state.reportPath ? { reportPath: state.reportPath, jsonPath: state.jsonPath,
+      reviewPath: state.reviewPath, reviewJsonPath: state.reviewJsonPath } : {}),
     nextAction: ACTIVE_STATUSES.has(state.status) ? '调用 status 查询进度，不重复 generate'
       : ['partial_draft', 'failed', 'cancelled', 'interrupted'].includes(state.status) ? 'generate mode=resume 只接续未完成部分' : '查看产物与待审项' })
   const submit = async (args, exec) => {

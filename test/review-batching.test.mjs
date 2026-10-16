@@ -184,3 +184,42 @@ test('没有内容变更的修正结果也缓存，不在恢复时重复相同�
   assert.equal(next.review.passed, false)
   assert.ok(next.reviewItems.includes('没有足够证据自动调整'))
 })
+
+test('合稿替换和缓存替换均须通过用途回调，拒绝时保留原有效段落', async () => {
+  for (const cached of [false, true]) {
+    let calls = 0, repaired = false
+    const sections = makeSections(1)
+    const options = await fixture({ sections, plan: makePlan(1), request: async prompt => {
+      calls++
+      if (prompt.stage === 'relationship-repair') {
+        repaired = true
+        return { replacements: [{ id: 'problems-1', text: '【待确认·典型场景假设】可考虑将内部审核过程说明写进客户正文。',
+          supportMode: 'candidate', evidence: [], planRefs: sections[0].blocks[0].planRefs }] }
+      }
+      const audit = completeAudit()
+      if (prompt.reviewScope === 'relationship:problems-1' && !repaired) {
+        audit.checks[0] = { id: REVIEW_CHECKS[0], status: 'needs_review', reason: '问题需对应后续方案', blockIds: ['problems-1'] }
+        audit.repairNeeded = true
+      }
+      return audit
+    } })
+    if (cached) {
+      const first = await reviewAssembly(options)
+      assert.match(first.sections[0].blocks[0].text, /内部审核过程/u)
+      calls = 0
+    }
+    let gateCalls = 0
+    options.validateBlock = (replacement, chapterKey) => {
+      gateCalls++
+      assert.equal(chapterKey, 'problems')
+      assert.match(replacement.text, /内部审核过程/u)
+      throw new Error('审核过程不进入客户正文')
+    }
+    const result = await reviewAssembly(options)
+    assert.deepEqual(result.sections, sections)
+    assert.equal(gateCalls, 1)
+    assert.equal(result.review.passed, false)
+    assert.ok(result.reviewItems.some(item => item.includes('审核过程不进入客户正文')))
+    if (cached) assert.equal(calls, 0)
+  }
+})

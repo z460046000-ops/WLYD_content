@@ -93,7 +93,7 @@ export function reviewGroups(sections, outline) {
   return jobs
 }
 
-export async function reviewAssembly({ request, common, plan, outline, sections, evidence, dir, state, saveState, signal, ruleFingerprint = null }) {
+export async function reviewAssembly({ request, common, plan, outline, sections, evidence, dir, state, saveState, signal, ruleFingerprint = null, validateBlock }) {
   let current = structuredClone(sections)
   const records = [], repairs = [], reviewItems = []
   const cache = new Map(), repairCache = new Map()
@@ -197,6 +197,7 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
         const replacement = { ...original, ...patch, id: original.id }
         if (original.supportMode === 'candidate' && replacement.supportMode !== 'candidate') throw new Error('局部修正不得将候选提升为事实')
         if (!list(replacement.evidence).every(ref => sources.some(source => source.id === ref.id && source.content.includes(ref.quote)))) throw new Error('局部修正引用不在当前证据内')
+        validateBlock?.(replacement, section.key)
         const checked = validateDraft({ sections: [{ key: section.key, blocks: [replacement] }] }, evidence, outline, plan)
         if (checked.issues.length) throw new Error(checked.issues.join('；'))
         const before = section.blocks.find(block => block.id === patch.id)

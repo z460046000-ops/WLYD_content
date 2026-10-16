@@ -13,13 +13,14 @@ const canonical = value => Array.isArray(value) ? value.map(canonical) : value &
 const digest = value => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
 
 /** Cached enrichment is reusable only as an intact add-only result with valid original sources. */
-async function reusableEnrichment({ file, inputSha256, chapters, targets, outline, plan, evidence, dir }) {
+async function reusableEnrichment({ file, inputSha256, chapters, targets, outline, plan, evidence, dir, validateBlock }) {
   try {
     const saved = await readJson(file, null)
     if (saved?.cacheVersion !== 1 || saved.status !== 'completed' || saved.inputSha256 !== inputSha256
       || !Array.isArray(saved.result?.chapters) || digest(saved.result) !== saved.resultSha256
       || saved.result.chapters.length !== chapters.length) return null
     const targetKeys = new Set(targets.map(section => section.key))
+    const appended = []
     for (const [index, chapter] of saved.result.chapters.entries()) {
       const original = chapters[index]
       if (chapter.section?.key !== original.section.key) return null
@@ -30,6 +31,7 @@ async function reusableEnrichment({ file, inputSha256, chapters, targets, outlin
       const initial = original.section.blocks, blocks = chapter.section.blocks
       if (!Array.isArray(blocks) || blocks.length < initial.length || digest(blocks.slice(0, initial.length)) !== digest(initial)) return null
       const additions = blocks.slice(initial.length)
+      appended.push(...additions.map(block => ({ block, chapterKey: chapter.section.key })))
       if (additions.length) {
         const checked = validateDraft({ sections: [{ key: chapter.section.key, blocks: additions }] }, evidence, outline, plan)
         if (checked.issues.length || digest(checked.sections[0].blocks) !== digest(additions)) return null
@@ -42,6 +44,12 @@ async function reusableEnrichment({ file, inputSha256, chapters, targets, outlin
       const chapter = saved.result.chapters.find(row => row.section.key === item.key)
       if (digest(output.section) !== digest(chapter.section)) return null
     }
+    const policyIssues = []
+    for (const { block, chapterKey } of appended) {
+      try { validateBlock?.(block, chapterKey) }
+      catch (error) { policyIssues.push(`${chapterKey} 缓存补充未通过用途校验：${error.message}`) }
+    }
+    if (policyIssues.length) return { policyRejected: true, validationIssues: policyIssues }
     return saved
   } catch { return null }
 }
@@ -58,7 +66,7 @@ export function panoramaCoverage(sections, outline) {
 }
 
 /** One add-only pass after all chapters settle. Original chapter files stay intact. */
-export async function enrichPanoramas({ request, common, plan, outline, rules, chapters, evidence, dir, state, saveState, signal, selectEvidence }) {
+export async function enrichPanoramas({ request, common, plan, outline, rules, chapters, evidence, dir, state, saveState, signal, selectEvidence, validateBlock }) {
   const nodes = flattenOutline(outline)
   const byKey = new Map(nodes.map(node => [node.key, node]))
   const sections = chapters.map(chapter => chapter.section)
@@ -98,7 +106,20 @@ export async function enrichPanoramas({ request, common, plan, outline, rules, c
       ruleFingerprint: rules.fingerprint || null, chapterRules: rules.chapters,
       modelSelection: state.modelSelection || null })
     const cached = await reusableEnrichment({ file: path.join(dir, 'panorama-enrichment.json'), inputSha256,
-      chapters, targets, outline, plan, evidence, dir })
+      chapters, targets, outline, plan, evidence, dir, validateBlock })
+    if (cached?.policyRejected) {
+      validationIssues.push(...cached.validationIssues)
+      reviewItems.push('全景缓存补充未通过本章用途校验，原有正文已保留')
+      Object.assign(progress, { status: 'partial', additions: 0, cached: false, inputSha256, validationIssues: [...validationIssues] })
+      for (const target of targets) {
+        const chapterState = state.chapters.find(chapter => chapter.key === target.key)
+        if (chapterState) {
+          chapterState.enrichment = { status: 'rejected', addedBlocks: 0 }
+          chapterState.path = `chapters/${target.key}/chapter.json`
+        }
+      }
+      return result
+    }
     if (cached) {
       result.chapters = structuredClone(cached.result.chapters)
       reviewItems.push(...strings(cached.result.reviewItems)); validationIssues.push(...strings(cached.result.validationIssues))
@@ -147,6 +168,7 @@ export async function enrichPanoramas({ request, common, plan, outline, rules, c
         let id
         do { id = `${original.key}-${++serial}` } while (usedIds.has(id))
         try {
+          validateBlock?.({ ...block, id }, original.key)
           const checked = validateDraft({ sections: [{ key: original.key, blocks: [{ ...block, id }] }] }, evidence, [byKey.get(original.key)], plan)
           const valid = checked.sections[0].blocks[0]
           accepted.push(valid); seen.add(bodyKey(valid.text)); usedIds.add(id)

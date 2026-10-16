@@ -12,8 +12,10 @@ import { askModel } from '../src/model.js'
 import { createLimiter, mapConcurrent } from '../src/scheduler.js'
 import { assemble, status } from '../src/workflow.js'
 
-const evidence = [{ id: 'M1-1', content: '产品支持统一维护线索状态，销售和客服可查看同一记录。' }]
+const evidence = [{ id: 'M1-1', content: '产品支持统一维护线索状态，销售和客服可查看同一记录。获准公开的客户案例中，客户使用统一记录完成销售和客服交接。公司提供协作软件与实施服务。' }]
 const ref = { id: 'M1-1', quote: '产品支持统一维护线索状态' }
+const caseRef = { id: 'M1-1', quote: '客户使用统一记录完成销售和客服交接' }
+const companyRef = { id: 'M1-1', quote: '公司提供协作软件与实施服务' }
 const agent = { options: { provider: 'fake', model: 'fake' } }
 const plan = {
   title: '线索协作方案', businessMode: { value: 'needs-challenges' }, trendFramework: { value: 'management-business-technology' },
@@ -26,9 +28,14 @@ const plan = {
 }
 const blockFor = chapter => ({ id: `${chapter.key}-7`, text: '可考虑以统一线索记录衔接销售和客服的业务动作。',
   supportMode: 'candidate', evidence: [], ...(chapter.framework ? { dimension: '技术' } : {}),
+  ...(chapter.roleId === 'customer-cases' ? { text: '获准公开的案例中，客户使用统一记录完成销售和客服交接。', supportMode: 'sourced', evidence: [caseRef] } : {}),
+  ...(chapter.roleId === 'company-profile' ? { text: '公司提供协作软件与实施服务。', supportMode: 'sourced', evidence: [companyRef] } : {}),
   planRefs: { capabilityIds: ['cap-1'], scenarioIds: ['scenario-1'], problemIds: ['problem-1'], trendIds: ['trend-1'] } })
 const answerFor = prompt => prompt.stage === 'plan' ? plan
-  : prompt.stage === 'extract' ? { facts: [{ text: evidence[0].content, evidence: [ref] }], writingOutline: [] }
+  : prompt.stage === 'extract' ? { facts: [prompt.chapter.roleId === 'customer-cases'
+    ? { text: '客户使用统一记录完成销售和客服交接。', subject: 'customer', purpose: 'case', supportMode: 'sourced', evidence: [caseRef] }
+    : prompt.chapter.roleId === 'company-profile' ? { text: '公司提供协作软件与实施服务。', subject: 'company', purpose: 'company-profile', supportMode: 'sourced', evidence: [companyRef] }
+      : { text: evidence[0].content, evidence: [ref] }], writingOutline: [] }
   : prompt.stage === 'panorama-enrichment' ? { additions: [], reviewItems: [] }
   : prompt.stage === 'consistency-review' ? completeAudit(['请业务负责人核对场景适用性'])
   : { sections: [{ key: prompt.chapter.key, blocks: [blockFor(prompt.chapter)] }], gaps: ['对应关系待核对'] }
@@ -233,8 +240,12 @@ test('篇幅软目标合并解决方案子节点，忽略标题和引用，缺�
   assert.ok(short.reviewItems.length)
   assert.equal(short.soft, true)
   const custom = contentBalance([sections[1], sections[2]], outline, rules.global.contentBalance)
-  assert.equal(custom.applicable, false)
-  assert.deepEqual(custom.reviewItems, [])
+  assert.equal(custom.applicable, true)
+  assert.deepEqual(custom.missingGroups, ['business'])
+  assert.equal(custom.groups.find(group => group.group === 'business').withinTarget, false)
+  assert.ok(custom.reviewItems.length)
+  const customOutline = outline.filter(node => node.key === 'solution')
+  assert.equal(contentBalance([sections[1], sections[2]], customOutline, rules.global.contentBalance).applicable, false)
 })
 
 test('每章拿自己的证据；具体缺项只补一轮，新增原文进入撰写与最终复核', async () => {

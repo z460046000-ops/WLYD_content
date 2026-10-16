@@ -2,11 +2,10 @@ import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { convertFile, MAX_BYTES } from './convert.js'
-import { flattenOutline } from './rules.js'
 import { confirmedPlan } from './planning.js'
 import { sourceEvidence, runPath } from './store.js'
 import { generateChapters } from './generation.js'
-import { reportText } from './content.js'
+import { chapterOutcomes, reportText, reviewDocument, reviewText } from './content.js'
 import { createRetrieval } from './retrieval.js'
 import { atomicJson, readJson } from './persistence.js'
 export { validateDraft } from './content.js'
@@ -219,29 +218,44 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
     const titleNumbers = proposedTitle.match(/\d+(?:[.,]\d+)*(?:%|％|万|亿|年|月|日|家|人)?/gu) ?? []
     const title = titleNumbers.some(number => !evidence.some(item => item.content.includes(number)))
       ? '产品售前解决方案' : proposedTitle
-    const generatedKeys = new Set(generated.sections.map(item => item.key))
-    const requiredGaps = flattenOutline(generated.outline).filter(item => item.required && !generatedKeys.has(item.key))
-      .map(item => `${item.title}：必需章节未成稿，原因见逐章运行记录`)
+    const outcomes = chapterOutcomes({ ...generated, chapterOutcomes: generated.chapterOutcomes || state.chapters })
+    const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
+    const requiredGaps = incomplete.filter(row => row.required)
+      .map(row => `${row.title}：必需章节${row.status === 'partial' ? '尚未完整' : '未成稿'}，原因见逐章运行记录`)
+    const reviewStatus = incomplete.length ? 'partial_draft' : 'needs_human_review'
+    const assemblyReview = { ...generated.review, ...(incomplete.length ? { passed: false,
+      incompleteChapters: incomplete.map(row => row.key) } : {}) }
     const report = { schemaVersion: 2, runId: outputId, title,
       templateId: rules.template.id, outline: generated.outline, sections: generated.sections,
+      chapterOutcomes: outcomes, omittedChapters: outcomes.filter(row => row.status === 'omitted'),
       choices: generated.choices, contentBalance: generated.contentBalance, validationIssues: generated.validationIssues,
-      assemblyLinks: generated.assemblyLinks, reviewItems: generated.reviewItems, assemblyReview: generated.review,
+      assemblyLinks: generated.assemblyLinks, reviewItems: generated.reviewItems, assemblyReview,
       confirmedPlan: { planId: args.plan_id, sha256: args.plan_sha256 },
       gaps: [...new Set([...gaps, ...requiredGaps, ...generated.gaps])],
       evidenceIds: evidence.map(item => item.id), ruleFingerprint: rules.fingerprint, loadedRules: rules.loaded,
-      reviewStatus: 'needs_human_review', generatedAt: new Date().toISOString() }
+      reviewStatus, generatedAt: new Date().toISOString() }
+    const review = reviewDocument(report)
     await writeJson(path.join(dir, 'report.json'), report)
     await writeFile(path.join(dir, 'report.md'), reportText(report), { mode: 0o600 })
-    const missingChapters = flattenOutline(generated.outline).filter(node => !generatedKeys.has(node.key))
-    state.status = missingChapters.length ? 'partial_draft' : 'needs_human_review'
+    await writeJson(path.join(dir, 'review.json'), review)
+    await writeFile(path.join(dir, 'review.md'), reviewText(review), { mode: 0o600 })
+    state.status = reviewStatus
     state.sections = report.sections.length; state.evidence = evidence.length
-    state.missingChapters = missingChapters.map(node => node.key)
+    state.missingChapters = incomplete.filter(row => row.status !== 'partial').map(row => row.key)
+    state.partialChapters = outcomes.filter(row => row.status === 'partial').map(row => row.key)
+    state.omittedChapters = outcomes.filter(row => row.status === 'omitted').map(row => row.key)
+    state.chapterOutcomes = outcomes
+    state.review = assemblyReview
     state.reportPath = path.join(dir, 'report.md'); state.jsonPath = path.join(dir, 'report.json')
+    state.reviewPath = path.join(dir, 'review.md'); state.reviewJsonPath = path.join(dir, 'review.json')
     state.finishedAt = new Date().toISOString()
     await saveState()
     return { runId: outputId, status: state.status, sections: report.sections.length, evidence: evidence.length,
-      choices: report.choices, planningStatus: state.planning.status, failedChapters: state.chapters.filter(item => item.status === 'failed').map(item => item.title),
+      choices: report.choices, planningStatus: state.planning.status, failedChapters: outcomes.filter(item => ['failed', 'cancelled'].includes(item.status)).map(item => item.title),
+      partialChapters: outcomes.filter(item => item.status === 'partial').map(item => item.title),
+      omittedChapters: outcomes.filter(item => item.status === 'omitted').map(item => item.title),
       assemblyReview: report.assemblyReview, reviewItemsCount: report.reviewItems.length, gapsCount: report.gaps.length,
+      reviewPath: state.reviewPath, reviewJsonPath: state.reviewJsonPath,
       reportPath: path.join(dir, 'report.md'), jsonPath: path.join(dir, 'report.json'), evidencePath: path.join(dir, 'evidence.json'), retrievalPath: path.join(dir, 'retrieval.json') }
   } catch (error) { state.status = exec.signal?.aborted ? 'cancelled' : 'failed'; state.error = error.message; throw error }
   finally { await saveState() }

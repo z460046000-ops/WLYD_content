@@ -35,29 +35,118 @@ function capabilityBoundary(block, planRefs, plan, candidate) {
   return { capabilityStatus, capabilityOwnership, mixed: mixedStatus || mixedOwnership, text: label && !text.includes(label) ? label + text : text }
 }
 
+/** A chapter with retained paragraphs can still be partial; only explicit optional omissions are complete. */
+export function chapterOutcomes(report) {
+  const sections = new Map((report.sections || []).map(section => [section.key, section]))
+  const recorded = new Map((report.chapterOutcomes || []).map(row => [row.key, row]))
+  return flattenOutline(report.outline || []).map(node => {
+    const row = recorded.get(node.key)
+    const hasContent = Boolean(sections.get(node.key)?.blocks?.length)
+    let status = row?.status || (hasContent ? 'completed' : 'failed')
+    if (status === 'omitted' && (node.required !== false || hasContent)) status = hasContent ? 'partial' : 'failed'
+    if (status === 'completed' && !hasContent) status = 'failed'
+    if (status === 'partial' && !hasContent) status = 'failed'
+    if (!['completed', 'partial', 'omitted', 'failed', 'cancelled'].includes(status)) status = hasContent ? 'partial' : 'failed'
+    if (hasContent && !['completed', 'omitted'].includes(status)) status = 'partial'
+    return { ...row, key: node.key, title: node.title, required: node.required !== false, status }
+  })
+}
+
 export function reportText(report) {
-  const byKey = new Map(report.sections.map(section => [section.key, section]))
+  const byKey = new Map((report.sections || []).map(section => [section.key, section]))
+  const outcomes = chapterOutcomes(report)
+  const byOutcome = new Map(outcomes.map(row => [row.key, row]))
+  const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
   const lines = [`# ${report.title}`, '']
-  const hasContent = node => byKey.has(node.key) || (node.children || []).some(hasContent)
+  if (incomplete.length || report.reviewStatus === 'partial_draft') {
+    lines.push('> 部分草稿：仍有章节未完成。已保留可用正文，请结合独立审核清单确认后使用。', '')
+  }
+  const hasContent = node => byOutcome.get(node.key)?.status !== 'omitted' || (node.children || []).some(hasContent)
   const visit = (nodes, depth) => {
     for (const node of nodes) {
       if (!hasContent(node)) continue
       lines.push(`${'#'.repeat(depth)} ${node.title}`, '')
       const section = byKey.get(node.key)
+      const outcome = byOutcome.get(node.key)
+      if (outcome?.status === 'partial') lines.push('> 本章尚未完整，以下保留已通过校验的内容。', '')
+      else if (outcome?.status !== 'omitted' && !section?.blocks?.length) lines.push('> 本章尚未完成，待补充。', '')
       if (section?.framework && FRAMEWORK_DIMENSIONS[section.framework]) {
         lines.push(`分析框架：${section.framework === 'pest' ? 'PEST' : '管理、业务、技术'}`, '')
       }
       for (const block of section?.blocks || []) {
         lines.push(block.text, '')
-        if (block.evidence.length) lines.push(`依据：${[...new Set(block.evidence.map(ref => `[${ref.id}]`))].join('、')}`, '')
+        if (block.evidence?.length) lines.push(`依据：${[...new Set(block.evidence.map(ref => `[${ref.id}]`))].join('、')}`, '')
       }
       visit(node.children || [], depth + 1)
     }
   }
-  visit(report.outline, 2)
-  if (report.reviewItems.length) lines.push('## 待核对的组稿关系与内容', '', ...report.reviewItems.map(item => `- ${item}`), '')
-  if (report.validationIssues?.length) lines.push('## 生成时过滤或修正的内容', '', ...report.validationIssues.map(item => `- ${item}`), '')
-  if (report.gaps.length) lines.push('## 待补充或人工确认', '', ...report.gaps.map(item => `- ${item}`), '')
+  visit(report.outline || [], 2)
+  return lines.join('\n')
+}
+
+const reviewLabels = { review: '待审', validation: '校验', gap: '缺项', chapter: '章节' }
+const normalizeReviewText = text => String(text).trim().replace(/\s+/gu, ' ')
+const mentionsChapter = (text, node) => {
+  const escapedKey = node.key.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  return new RegExp(`(?:^|[^a-z0-9-])${escapedKey}(?=$|[^a-z0-9-]|-\\d+(?:\\b|$))`, 'u').test(text)
+    || Boolean(node.title && text.includes(node.title))
+}
+
+/** Keep the full audit outside the customer manuscript; grouping never drops the raw records. */
+export function reviewDocument(report) {
+  const outcomes = chapterOutcomes(report)
+  const nodes = flattenOutline(report.outline || [])
+  const items = [], byText = new Map()
+  const add = (value, category, explicitKey) => {
+    const text = normalizeReviewText(value)
+    if (!text) return
+    const matches = explicitKey ? [explicitKey] : nodes.filter(node => mentionsChapter(text, node)).map(node => node.key)
+    const existing = byText.get(text)
+    if (existing) {
+      existing.occurrences++
+      if (!existing.categories.includes(category)) existing.categories.push(category)
+      existing.chapterKeys = [...new Set([...existing.chapterKeys, ...matches])]
+      return
+    }
+    const item = { id: `audit-${items.length + 1}`, text, categories: [category], chapterKeys: matches, occurrences: 1 }
+    byText.set(text, item); items.push(item)
+  }
+  for (const [field, category] of [['reviewItems', 'review'], ['validationIssues', 'validation'], ['gaps', 'gap']]) {
+    for (const value of Array.isArray(report[field]) ? report[field] : []) add(value, category)
+  }
+  for (const row of outcomes) if (!['completed', 'omitted'].includes(row.status)) {
+    add(`${row.title}：${row.status === 'partial' ? '保留部分有效正文，仍未完成' : '未完成正文'}${row.error ? `（${row.error}）` : ''}`, 'chapter', row.key)
+  }
+  const groups = [{ key: null, title: '整体审核', itemIds: items.filter(item => !item.chapterKeys.length).map(item => item.id) },
+    ...nodes.map(node => ({ key: node.key, title: node.title,
+      itemIds: items.filter(item => item.chapterKeys[0] === node.key).map(item => item.id) }))].filter(group => group.itemIds.length)
+  return { schemaVersion: 1, runId: report.runId, reviewStatus: report.reviewStatus,
+    generatedAt: report.generatedAt, chapterOutcomes: outcomes,
+    summary: { uniqueItems: items.length, sourceItems: items.reduce((count, item) => count + item.occurrences, 0),
+      completedChapters: outcomes.filter(row => row.status === 'completed').length,
+      partialChapters: outcomes.filter(row => row.status === 'partial').length,
+      failedChapters: outcomes.filter(row => ['failed', 'cancelled'].includes(row.status)).length,
+      omittedChapters: outcomes.filter(row => row.status === 'omitted').length },
+    groups, items,
+    raw: { reviewItems: report.reviewItems || [], validationIssues: report.validationIssues || [], gaps: report.gaps || [],
+      assemblyReview: report.assemblyReview || null, contentBalance: report.contentBalance || null } }
+}
+
+export function reviewText(review) {
+  const byId = new Map(review.items.map(item => [item.id, item]))
+  const lines = ['# 内部审核清单', '', `稿件状态：${review.reviewStatus === 'partial_draft' ? '部分草稿' : '待人工审核'}`, '',
+    `审核事项：${review.summary.uniqueItems} 项（原始记录 ${review.summary.sourceItems} 条，重复内容已合并）。`, '']
+  const omitted = review.chapterOutcomes.filter(row => row.status === 'omitted')
+  if (omitted.length) lines.push('## 已省略的可选章节', '', ...omitted.map(row => `- ${row.title}：${row.omissionReason || '未取得适合正文的证据'}`), '')
+  for (const group of review.groups) {
+    lines.push(`## ${group.title}`, '')
+    for (const id of group.itemIds) {
+      const item = byId.get(id)
+      lines.push(`- 【${item.categories.map(category => reviewLabels[category]).join('、')}】${item.text}`)
+    }
+    lines.push('')
+  }
+  if (!review.items.length) lines.push('未记录额外审核事项，仍需人工确认业务事实、方案适用性与对外表述。', '')
   return lines.join('\n')
 }
 
@@ -83,7 +172,9 @@ export function validateDraft(draft, evidence, outline, plan = {}) {
       if (text.length < 8 || (!refs.length && !candidate)) {
         issues.push(`${item.key} 有无正文或无来源段落`); continue
       }
-      if (candidate && /(?:本产品|我司|客户)(?:已|现已|已经)|已实现|已上线|已交付|已获得|保证|承诺/iu.test(text)) {
+      // Exclude only an explicitly negated claim token; positive claims elsewhere still fail.
+      const candidateClaims = text.replace(/(?:不能|不得|不应|不可)(?:作为|视为|表述为|写成|宣称为)(?:(?:本产品|我司|客户)?(?:现已|已经|已)(?:实现|上线|交付|获得)|保证|承诺)/gu, '')
+      if (candidate && /(?:本产品|我司|客户)(?:已|现已|已经)|已实现|已上线|已交付|已获得|保证|承诺/iu.test(candidateClaims)) {
         issues.push(`${item.key} 的待确认内容写成了已发生事实`); continue
       }
       const checked = refs.map(ref => {

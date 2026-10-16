@@ -1,5 +1,6 @@
 import { atomicJson } from './persistence.js'
 import { askModel, resolveWritingModel, stageOutputBudget } from './model.js'
+import { normalizeFactMetadata } from './evidence-policy.js'
 
 export const list = value => Array.isArray(value) ? value : []
 export const strings = value => [...new Set(list(value).filter(item => typeof item === 'string' && item.trim()).map(item => item.trim()))]
@@ -11,7 +12,8 @@ export function commonContext(rules, args) {
   return { author: { identity: args.author_identity || '售前方案作者', domain: args.domain || '', objective: args.objective || '编制产品解决方案' },
     audience: args.audience || '首次接触方案的企业客户',
     evidenceRules: rules.global.evidence, writingRules: rules.global.writing,
-    styleRules: rules.style, assemblyLogic: { traceability: rules.global.assemblyLogic.traceability,
+    styleRules: rules.style, factUsagePolicy: rules.global.fact_usage_policy,
+    assemblyLogic: { traceability: rules.global.assemblyLogic.traceability,
       evidenceBoundary: rules.global.assemblyLogic.evidenceBoundary } }
 }
 
@@ -55,7 +57,9 @@ export function evidenceBatches(evidence, size = 6000) {
     const content = String(source.content || '')
     for (let start = 0; start < content.length;) {
       const end = Math.min(start + 2400, content.length)
-      const row = { id: source.id, content: content.slice(start, end), span: { start, end }, partial: content.length > end || start > 0 }
+      const row = { id: source.id, content: content.slice(start, end), span: { start, end }, partial: content.length > end || start > 0,
+        ...Object.fromEntries(Object.entries({ kind: 64, source: 512, locator: 256, publishedAt: 120, asOf: 120 }).filter(([key]) =>
+          typeof source[key] === 'string' && source[key].trim()).map(([key, limit]) => [key, source[key].slice(0, limit)])) }
       if (batch.length && length + row.content.length > size) { batches.push(batch); batch = []; length = 0 }
       batch.push(row); length += row.content.length
       if (end === content.length) break
@@ -69,18 +73,21 @@ export function evidenceBatches(evidence, size = 6000) {
 export function checkedFacts(raw, originals) {
   return list(raw?.facts).flatMap(item => {
     if (!item || !String(item.text || '').trim()) return []
+    const metadata = normalizeFactMetadata(item)
     const refs = list(item.evidence).map(ref => {
       const quote = String(ref?.quote || '').trim()
       const source = originals.find(row => row.id === String(ref?.id) && row.content.includes(quote))
       return source && quote.length >= 6 && source.content.includes(quote) ? { id: source.id, quote } : null
     })
-    if (refs.some(ref => !ref) || (!refs.length && item.supportMode !== 'candidate')) return []
-    return [{ text: String(item.text), supportMode: item.supportMode === 'candidate' || !refs.length ? 'candidate' : 'sourced', evidence: refs }]
+    if (refs.some(ref => !ref) || (!refs.length && metadata.supportMode !== 'candidate')) return []
+    return [{ text: String(item.text), ...metadata,
+      supportMode: metadata.supportMode === 'candidate' || !refs.length ? 'candidate' : 'sourced', evidence: refs }]
   })
 }
 
 export function uniqueFacts(facts) {
-  return [...new Map(facts.map(item => [JSON.stringify([item.text, item.evidence]), item])).values()]
+  return [...new Map(facts.map(item => [JSON.stringify([item.text, item.evidence, item.subject, item.purpose, item.scope,
+    item.supportMode, item.capabilityStatus, item.capabilityOwnership, item.asOf, item.topic]), item])).values()]
 }
 
 /** Pass the checked original quote plus its nearby conditions, not the original pool. */

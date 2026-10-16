@@ -1,8 +1,43 @@
 {
   "roleId": "customer-cases",
-  "version": "0.1.0",
-  "extractQuestions": ["案例是否获准公开", "客户、行业、场景与实施范围是什么", "结果数据的原始依据和统计口径是什么"],
-  "write": ["有授权时按场景、实施内容、可核实结果组织", "匿名案例也需确认可公开范围"],
-  "validate": ["客户名与案例授权可核对", "数字、对比基线和时间有原始依据", "旧 goodcase 客户和数字不得迁移"],
-  "missing": "整章可省略并请求案例材料；不制造匿名成功案例"
+  "version": "0.2.0",
+  "extractQuestions": [
+    "案例是否获准公开",
+    "客户、行业、场景与实施范围是什么",
+    "结果数据的原始依据和统计口径是什么"
+  ],
+  "write": [
+    "有授权时按场景、实施内容、可核实结果组织",
+    "匿名案例也需确认可公开范围",
+    "只有正向真实案例证据才能形成正文；暂无案例、试点待验证、后续补充案例等状态说明保留审核，不扩写成案例章节"
+  ],
+  "validate": [
+    "客户名与案例授权可核对",
+    "数字、对比基线和时间有原始依据",
+    "旧 goodcase 客户和数字不得迁移"
+  ],
+  "missing": "无正向真实案例证据时省略可选案例正文，内部审核集中记录一次待补事项；不扩写无案例说明或制造匿名成功案例",
+  "contentPolicy": {
+    "subjects": [
+      "customer",
+      "company",
+      "unknown"
+    ],
+    "purposes": [
+      "case",
+      "unknown"
+    ],
+    "excludeSubjects": [
+      "vendor-internal"
+    ],
+    "excludePurposes": [
+      "internal"
+    ],
+    "allowCandidate": false,
+    "requireKnownPurpose": true,
+    "roleFocus": "仅写真实案例的场景、实施范围及有据结果；缺案例的解释只进入审核记录",
+    "optional": true,
+    "omitWhenNoEligibleFacts": true,
+    "requiresPositiveEvidence": true
+  }
 }
