@@ -2,7 +2,7 @@
 
 独立 DSH/Cordis 插件：导入材料、同步项目知识库，按规则生成可审阅的解决方案正文。当前输出 Markdown/JSON；HTML 编辑、架构图绘制、PPTX/PDF 导出尚未实现，不依赖旧插件或 HTML Anything。
 
-**当前源码为 0.7.0：精简逐章提取、撰写及复核提示词。** 0.6.0 的材料用途筛选、主题组稿、局部失败保留与独立审核继续保留。本机 [3081 测试环境](http://127.0.0.1:3081/)此前安装的是 0.6.0，日常 3080 此前保留 0.5.0；0.7.0 尚未打包安装，也未用真实模型生成。版本和验证边界见 [测试记录](docs/test-record.md)。源码修改不会自动更新安装版，升级需完整重启 DSH 并核对运行中的工具协议。遗留任务见 [待办](docs/backlog.md)。
+**当前源码和测试安装版为 0.7.0：精简逐章提取、撰写及复核提示词。** 0.6.0 的材料用途筛选、主题组稿、局部失败保留与独立审核继续保留。已从校验过的安装包更新并重启本机 [3081 测试环境](http://127.0.0.1:3081/)；日常 3080 仍为 0.5.0。尚未用真实模型生成，浏览器插件页也未核对；验证边界见 [测试记录](docs/test-record.md)。源码修改不会自动更新安装版，升级需完整重启 DSH。遗留任务见 [待办](docs/backlog.md)。
 
 全局规则已更新到 **0.9.0**，旧 `planId` 的规则指纹不再匹配：升级 0.7.0 后重新 `plan → confirm → generate`，可以复用原导入材料，不必重复上传。
 
@@ -16,8 +16,8 @@
 | Cordis 组件 / 工具前缀 | `wlyd-material-knowledge-assembly` / `wlyd_assembly_*` |
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 日常安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
-| 本机最近核对的测试安装版 | `http://127.0.0.1:3081/`，profile 为 `wlyd-assembly-021-browser`（历史名称），0.6.0；升级前需重新核对运行状态 |
-| 最近打包的安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.6.0.tgz`；0.7.0 尚未打包 |
+| 本机测试安装版 | `http://127.0.0.1:3081/`，profile 为 `wlyd-assembly-021-browser`（历史名称），已安装并重启 0.7.0；页面未核对 |
+| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.7.0.tgz`；SHA-256 见 `releases/SHA256SUMS` |
 | 历史安装包 / 校验 | `releases/` / `releases/SHA256SUMS` |
 | 运行产物 | **当前 DSH 会话工作区**的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
 
@@ -228,18 +228,16 @@ artifacts/material-knowledge-assembly/runs/<runId>/
 
 ## 5. 安装与配置
 
-Node.js 22+、DSH 和内容中台账号为前提。以下命令用于当前 0.7.0 源码的后续打包与安装；本轮尚未执行，已安装的 0.6.0 历史记录见测试记录：
+Node.js 22+、DSH 和内容中台账号为前提。0.7.0 已打包并安装到测试 profile；复用已校验安装包时运行：
 
 ```bash
-npm ci
-npm run check
-npm test
-npm pack --pack-destination releases
 shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.7.0.tgz
 dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.7.0.tgz"
 ```
 
-更换插件版本后完整重启对应 DSH 并刷新页面，再核对插件版本与组件“运行中”；包版本更新不代表旧进程中的工具定义已刷新。安装验证记录见项目 memory.md，不能把加载成功当成真实组稿验收。
+校验值应为 `f90cc852803a7a431469bd159b36fc364c27de1ede86aba7104b7740ba2ad7f7`。这份包的文档是打包时快照；发布后补记的安装结果以仓库当前 README 和测试记录为准。若修改源码或文档，应升新版本再打包，避免同名包产生不同哈希。
+
+更换插件版本后完整重启对应 DSH 并刷新页面，再核对插件版本与组件“运行中”；包版本更新不代表旧进程中的工具定义已刷新。本轮浏览器页面核对未完成，安装验证记录见 [测试记录](docs/test-record.md)，不能把加载成功当成真实组稿验收。
 
 配置优先级：插件 config → 环境变量 → `$DSH_HOME/.env`。
 
