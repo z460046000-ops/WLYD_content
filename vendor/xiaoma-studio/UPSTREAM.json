@@ -1,0 +1,56 @@
+{
+  "repository": "https://github.com/crawfordxx/xiaoma-studio",
+  "commit": "6f7b4927bf4be7f057e58269febf52200bb1f01f",
+  "license": "MIT",
+  "scope": "HTML slides only; original upstream files preserved",
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "9d611ce6a893ddbb3178af3a8a0726e20b0c14f87fd652ecde2ad7d3e6dbf24c"
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "2af15847f5b57d5bba33ad2ed056a0acb972721ba261350a83d9947cde5f2e2d"
+    },
+    {
+      "path": "references/slides.md",
+      "sha256": "ff5843a4a60189578526a3cbc3919ea4fc9e80a35530b35f8c4f1462b08b32b9"
+    },
+    {
+      "path": "references/aesthetics.md",
+      "sha256": "ec74a62c9d3c714f41690b120ce3ac13f9b4a95be27fcc7667f23961edb9a789"
+    },
+    {
+      "path": "engine/runtime.js",
+      "sha256": "be0378b8e02a7e6fda5b94e25db4db5696e6a92cb1e1d7eb3deedd1900fdd4aa"
+    },
+    {
+      "path": "engine/deck.js",
+      "sha256": "0811e50d470fe496f8c6a89bb21115726c5880cc2e14170e8dfe94b9d0f165ce"
+    },
+    {
+      "path": "engine/themes.css",
+      "sha256": "787d4370c3bd09aca2dcc7c42ad2654b5945c69092951ceacd26c79bd8597cd6"
+    },
+    {
+      "path": "engine/base.css",
+      "sha256": "8a8821a78078b6a78a1f9779f75670401fdf7c3607ef9e85dac41f7fb2f4beca"
+    },
+    {
+      "path": "engine/lint.mjs",
+      "sha256": "356539f10fa6c98a10ed8f1083aa2a5d0bff6bc533d2024057f954ac8455de7e"
+    },
+    {
+      "path": "engine/render.mjs",
+      "sha256": "2bd8e4e93f1bb8643bdad26252297c5c836170ea8900138978a37a41230926ea"
+    },
+    {
+      "path": "engine/package.json",
+      "sha256": "4e8955da58602177309e911168a048ccbd28da834e58f9299b146721aad5cb9e"
+    },
+    {
+      "path": "templates/slides/index.html",
+      "sha256": "fc86d24e2a8d36bf1fc34ac39edf415973ac16724d45bf0b828c196d4e6fa518"
+    }
+  ]
+}

@@ -12,6 +12,7 @@ import { createRetrieval } from './retrieval.js'
 import { reviewAssembly } from './review.js'
 import { routeFacts } from './evidence-policy.js'
 import { linksFromPlan } from './generation.js'
+import { coverageFromReport } from './content/coverage.js'
 
 const TERMINAL = new Set(['draft_ready', 'needs_human_review', 'partial_draft', 'failed', 'cancelled'])
 const summary = (report, node) => {
@@ -23,6 +24,7 @@ const summary = (report, node) => {
     inputNeeded: report.sections.find(row => row.key === node.key)?.inputNeeded || null }
 }
 async function writeViews(dir, report, state) {
+  state.contentCoverage = coverageFromReport(report)
   const review = reviewDocument(report)
   await writeFile(path.join(dir, 'report.md'), reportText(report), { mode: 0o600 })
   await atomicJson(path.join(dir, 'review.json'), review)
@@ -135,6 +137,7 @@ export async function chapterAction({ client, llm, args, exec }) {
       state.status = 'draft_ready'; record.totalMs = Date.now() - started
     } else throw new Error('未知章节操作')
     report.generatedAt = new Date().toISOString()
+    report.contentCoverage = coverageFromReport(report)
     await atomicJson(path.join(dir, 'report.json'), report)
     await writeViews(dir, report, state)
     return { runId: args.run_id, chapter: summary(report, node), reportPath: path.join(dir, 'report.md'),

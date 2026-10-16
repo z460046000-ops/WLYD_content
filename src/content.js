@@ -84,6 +84,7 @@ export function reportText(report) {
   const byOutcome = new Map(outcomes.map(row => [row.key, row]))
   const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
   const lines = [`# ${report.title}`, '']
+  if (report.contentCoverage) lines.push(`> 正文覆盖：${report.contentCoverage.proseChapters}/${report.contentCoverage.totalChapters} 章；待补材料卡：${report.contentCoverage.needsInputChapters} 章。材料卡不代表正文已完成。`, '')
   if (report.reviewStatus === 'draft_building') {
     lines.push('> 初稿正在逐章生成：已完成的章节可先阅读，其余章节会继续补齐。', '')
   } else if (report.reviewStatus === 'draft_reviewing') {

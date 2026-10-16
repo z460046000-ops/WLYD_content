@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import path from 'node:path'
+import { coverageFromReport } from './content/coverage.js'
 import { convertFile, MAX_BYTES } from './convert.js'
 import { confirmedPlan } from './planning.js'
 import { sourceEvidence, runPath } from './store.js'
@@ -245,6 +246,7 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
         gaps: [...new Set([...gaps, ...requiredGaps, ...(generated.gaps || [])])],
         evidenceIds: evidence.map(item => item.id), ruleFingerprint: rules.fingerprint, loadedRules: rules.loaded,
         reviewStatus, generatedAt: new Date().toISOString() }
+      report.contentCoverage = coverageFromReport(report)
       const chapterRecords = deliveredReport?.chapterRecords || previousReport?.chapterRecords
       if (chapterRecords) {
         report.chapterRecords = deepClone(chapterRecords)
@@ -265,6 +267,7 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
       state.partialChapters = outcomes.filter(row => row.status === 'partial').map(row => row.key)
       state.omittedChapters = outcomes.filter(row => row.status === 'omitted').map(row => row.key)
       state.chapterOutcomes = outcomes
+      state.contentCoverage = report.contentCoverage
       state.review = assemblyReview
       state.reportPath = path.join(dir, 'report.md'); state.jsonPath = path.join(dir, 'report.json')
       state.reviewPath = path.join(dir, 'review.md'); state.reviewJsonPath = path.join(dir, 'review.json')

@@ -7,7 +7,7 @@ const DEFAULT_STAGE_TIMEOUT_MS = 600_000
 const DEFAULT_QUEUE_TIMEOUT_MS = 1_800_000
 const MIN_CONFIGURED_TIMEOUT_MS = 60_000
 const MAX_CONFIGURED_TIMEOUT_MS = 1_800_000
-const STAGES = new Set(['plan', 'extract', 'write', 'panorama-enrichment', 'consistency-review', 'relationship-repair'])
+const STAGES = new Set(['plan', 'extract', 'write', 'panorama-enrichment', 'consistency-review', 'relationship-repair', 'presentation'])
 const USAGE_FIELDS = ['inputTokens', 'outputTokens', 'totalTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens']
 
 function configuredTimeout(value) {
@@ -60,8 +60,8 @@ export function resolveModelSelection(agent) {
 }
 
 /** Prefer an adapter-declared low setting; never invent an opaque effort id. */
-export async function resolveWritingModel(llm, agent, signal) {
-  const selected = resolveModelSelection(agent)
+export async function resolveWritingModel(llm, agent, signal, configuredRoute) {
+  const selected = configuredRoute ? { ...configuredRoute, selectionSource: 'plugin-role' } : resolveModelSelection(agent)
   const { reasoningEffort: inherited, ...route } = selected
   if (!llm?.resolveModelInfo) return { ...route, reasoningPolicy: 'unverified', supportedReasoningEfforts: [], outputBudgetPolicy: 'route-default',
     reasoningNote: '宿主未提供模型能力查询，未继承会话高思考；实际使用提供方默认值，低思考未验证' }

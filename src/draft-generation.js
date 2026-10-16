@@ -6,6 +6,37 @@ import { createRequester, commonContext, chapterPlan, writeJson, list, strings }
 import { annotateDraft, inputCard } from './fact-cards.js'
 import { sourceCardBatches, materializeCombined, partialCombinedProse } from './combined-writing.js'
 import { reviewAssembly } from './review.js'
+import { classifyModelFailure } from './model.js'
+
+function modelReason(error) {
+  const kind = classifyModelFailure(error)
+  if (['queue', 'stage'].includes(kind) || error?.name === 'TimeoutError' || /\b(?:timed?\s*out|timeout)\b|超时/iu.test(error?.message || '')) return 'model_timeout'
+  return ({ output: 'model_output_limit', context: 'model_context_limit', auth: 'model_auth_failed', quota: 'model_quota_failed' })[kind] || 'model_failed'
+}
+
+async function retrievalDiagnostics(retrieval, chapterDir, node, sources) {
+  let queries = []
+  try { queries = list(JSON.parse(await readFile(path.join(chapterDir, 'retrieval.json'), 'utf8')).queries) } catch { /* Optional for retrieval adapters without a disk audit. */ }
+  const knownHits = retrieval.chapterKnowledgeHits?.(node.key)
+  const knowledgeHits = Array.isArray(knownHits) ? knownHits.length : null
+  const failedQueries = queries.filter(query => query.status === 'failed').length
+  const failedPreparation = !queries.length && list(retrieval.coverage).some(base => base.status === 'failed')
+  const successfulQueries = queries.filter(query => query.status === 'completed').length
+  const partialQueries = queries.filter(query => query.partial).length
+  const reasonCodes = []
+  if (failedQueries || failedPreparation) reasonCodes.push('retrieval_failed')
+  if (partialQueries) reasonCodes.push('retrieval_partial')
+  if (knowledgeHits === 0 && successfulQueries > 0 && !partialQueries && !failedQueries) reasonCodes.push('zero_knowledge_hits')
+  return { reasonCode: reasonCodes[0] || null, reasonCodes, knowledgeHits,
+    knowledgeQueries: retrieval.chapterKnowledgeQueries?.(node.key) || queries.length,
+    successfulQueries, failedQueries, partialQueries, selectedKnowledgeSources: sources.length,
+    selectedFacts: 0, excludedFacts: 0, modelFailures: 0, modelTimeouts: 0, emptyBatches: 0 }
+}
+
+function addDiagnostic(diagnostics, reason) {
+  if (!diagnostics.reasonCodes.includes(reason)) diagnostics.reasonCodes.push(reason)
+  diagnostics.reasonCode = diagnostics.reasonCodes[0] || null
+}
 
 export function draftWritePrompt({ common, node, rule, cards, plan, instruction, blocks, combined = false }) {
   return { stage: 'write', qualityMode: 'draft', author: common.author, audience: common.audience, chapter: node,
@@ -55,13 +86,20 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
     const rule = rules.chapters[node.roleId] || rules.global.customChapter
     await mkdir(path.join(chapterDir, 'versions'), { recursive: true, mode: 0o700 })
     let section, cards = [], issues = [], status = 'draft_unverified'
+    let diagnostics = { reasonCode: null, reasonCodes: [], knowledgeHits: null, knowledgeQueries: 0,
+      selectedFacts: 0, excludedFacts: 0, modelFailures: 0, modelTimeouts: 0, emptyBatches: 0 }
     try {
       progress.status = 'retrieving'; await saveState()
-      const found = await retrieval.forChapter(node, plan, [], { strategy: 'fast' })
+      let found
+      try { found = await retrieval.forChapter(node, plan, [], { strategy: 'fast' }) }
+      catch (error) { addDiagnostic(diagnostics, 'retrieval_failed'); throw error }
       const sources = found.filter(source => source.kind === 'knowledge')
+      diagnostics = await retrievalDiagnostics(retrieval, chapterDir, node, sources)
+      progress.diagnostics = diagnostics
       progress.knowledgeHits = retrieval.chapterKnowledgeHits?.(node.key).length || 0
       progress.knowledgeQueries = retrieval.chapterKnowledgeQueries?.(node.key) || 0
-      progress.knowledgeStatus = progress.knowledgeHits ? 'matched' : 'empty'
+      progress.knowledgeStatus = diagnostics.reasonCodes.includes('retrieval_failed') ? progress.knowledgeHits ? 'partial' : 'failed'
+        : diagnostics.partialQueries ? 'partial' : progress.knowledgeHits ? 'matched' : 'empty'
       if (resume && ['completed', 'draft_unverified'].includes(prior.get(node.key)?.status)) {
         let reusable
         try {
@@ -71,13 +109,19 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
             Object.assign(progress, prior.get(node.key), { reusedChapter: true, knowledgeHits: progress.knowledgeHits,
               knowledgeQueries: progress.knowledgeQueries, knowledgeStatus: progress.knowledgeStatus })
             if (!progress.knowledgeHits) progress.status = 'draft_unverified'
-            reusable = old
+            reusable = { ...old, diagnostics: { ...old.diagnostics, ...diagnostics,
+              selectedFacts: old.diagnostics?.selectedFacts || 0, reusedChapter: true } }
+            progress.diagnostics = reusable.diagnostics
           }
         } catch { /* Missing or invalid chapter is generated again. */ }
         if (reusable) { await saveState(); await publish(node, reusable); return reusable }
       }
       if (!sources.length) {
-        section = inputCard(node, rule, '本章知识库没有可用片段，请补充材料或调整章节要求')
+        if (!diagnostics.reasonCode) addDiagnostic(diagnostics, 'no_usable_evidence')
+        section = inputCard(node, rule, diagnostics.reasonCode === 'retrieval_failed'
+          ? '本章检索请求未成功，暂不能判断是否缺料；可恢复检索后重试'
+          : diagnostics.reasonCode === 'zero_knowledge_hits' ? '本章当次检索没有命中，请调整检索或补充材料'
+            : '本章尚无可用知识库片段，请检查检索范围或补充材料')
         status = 'needs_input'
       } else {
         const allCards = new Map(), body = [], bodyKeys = new Set()
@@ -95,11 +139,21 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
               ...(body.length ? { instruction: '继续本章尚未展开的主题，不重复最近已写内容', blocks: body.slice(-8).map(block => ({ text: block.text.slice(0, 120) })) } : {}) }))
           } catch (error) {
             if (exec.signal?.aborted) throw error
+            const reason = modelReason(error)
+            addDiagnostic(diagnostics, reason); diagnostics.modelFailures++
+            if (reason === 'model_timeout') diagnostics.modelTimeouts++
             partial = true; issues.push(`本章撰写未完整结束：${error.message}`)
             raw = { sections: [{ key: node.key, blocks: partialCombinedProse(error.partialOutput) }] }
           }
           await writeJson(path.join(chapterDir, `draft-${batchIndex + 1}.json`), raw)
           const materialized = materializeCombined(raw, sourceCards, evidence, node, rule)
+          diagnostics.selectedFacts += materialized.facts.length
+          diagnostics.excludedFacts += materialized.excludedFacts.length
+          if (materialized.excludedFacts.length) {
+            const reasons = materialized.excludedFacts.flatMap(fact => list(fact.exclusionReasons))
+            addDiagnostic(diagnostics, reasons.some(reason => /用途|(?:purpose|subject)=|本章只接受|正向事实|不是合作案例/u.test(reason))
+              ? 'purpose_mismatch' : 'material_not_applicable')
+          }
           for (const card of materialized.cards) allCards.set(card.id, card)
           extraction.facts.push(...materialized.facts)
           issues.push(...materialized.reviewItems, ...strings(raw?.reviewItems))
@@ -115,7 +169,10 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
             } catch (error) { if (exec.signal?.aborted) throw error; issues.push(`单轮修正未完成，保留初稿：${error.message}`) }
           }
           issues.push(...checked.issues)
-          if (!checked.section.blocks.length) issues.push(`第${batchIndex + 1}批未返回适合本章的正文；已保留其他批次内容，可按章补充或重试`)
+          if (!checked.section.blocks.length) {
+            diagnostics.emptyBatches++
+            issues.push(`第${batchIndex + 1}批未返回适合本章的正文；已保留其他批次内容，可按章补充或重试`)
+          }
           for (const block of checked.section.blocks) {
             const key = JSON.stringify([block.text, block.supportMode, block.factIds, block.capabilityStatus, block.capabilityOwnership])
             if (!bodyKeys.has(key)) { bodyKeys.add(key); body.push({ ...block, id: `${node.key}-${body.length + 1}` }) }
@@ -132,6 +189,7 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
         section = { key: node.key, title: node.title, roleId: node.roleId,
           ...(node.framework ? { framework: node.framework } : {}), blocks: body }
         if (!body.length) {
+          if (!diagnostics.reasonCode) addDiagnostic(diagnostics, 'no_prose')
           section = inputCard(node, rule, issues[0] || '知识库材料尚不能支持本章正文，请补充对应事实或按章重试')
           status = 'needs_input'
         } else status = 'draft_unverified'
@@ -140,15 +198,16 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
       if (!progress.knowledgeHits) issues.push('本章当次检索零命中；规划锚点不算本章新命中，请补查')
     } catch (error) {
       if (exec.signal?.aborted) { progress.status = 'cancelled'; await saveState(); throw abortError(exec.signal) }
+      if (!diagnostics.reasonCode) addDiagnostic(diagnostics, 'generation_failed')
       issues.push(error.message)
       section = inputCard(node, rule, `本章暂未完成：${error.message}`); status = 'needs_input'
     }
     const version = (prior.get(node.key)?.version || 0) + 1
-    const chapter = { section, status, version, reviewItems: strings(issues), validationIssues: [], gaps: [],
+    const chapter = { section, status, version, diagnostics: { ...diagnostics, hasProse: Boolean(section.blocks?.length) }, reviewItems: strings(issues), validationIssues: [], gaps: [],
       generatedAt: new Date().toISOString() }
     await writeJson(path.join(chapterDir, 'chapter.json'), chapter)
     await writeJson(path.join(chapterDir, 'versions', `${version}.json`), chapter)
-    Object.assign(progress, { status, version, evidenceCount: cards.length, reviewItems: chapter.reviewItems,
+    Object.assign(progress, { status, version, diagnostics: chapter.diagnostics, evidenceCount: cards.length, reviewItems: chapter.reviewItems,
       path: `chapters/${node.key}/chapter.json` })
     await saveState()
     await publish(node, chapter)

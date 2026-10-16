@@ -37,7 +37,7 @@ export function observedTask(state) {
 }
 
 /** Host jobs own cancellation; disk checkpoints own restart recovery. No unowned jobs. */
-export function createTaskService({ jobs, client, llm, execute = assemble, persist = atomicJson }) {
+export function createTaskService({ jobs, client, llm, execute = assemble, persist = atomicJson, afterComplete, modelRoute }) {
   const live = new Map()
   let closing = false
   const controllerDisposer = jobs.attachController('wlyd-assembly-tasks')
@@ -83,7 +83,7 @@ export function createTaskService({ jobs, client, llm, execute = assemble, persi
     const materialHash = materialFingerprint(source)
     if (saved && (saved.materialSha256 !== materialHash || saved.planSha256 !== args.plan_sha256
       || saved.ruleFingerprint !== confirmed.rules.fingerprint)) throw new Error('恢复输入、规划或规则已改变，不能复用旧章节；请重新规划生成')
-    const modelSelection = saved?.modelSelection || await resolveWritingModel(llm, exec.agent, exec.signal)
+    const modelSelection = saved?.modelSelection || await resolveWritingModel(llm, exec.agent, exec.signal, modelRoute)
     if (closing) throw new Error('插件正在停止，暂不接收新任务')
     if (exec.signal?.aborted) throw exec.signal.reason || new Error('任务提交已取消')
     if (mode !== 'resume') {
@@ -146,6 +146,10 @@ export function createTaskService({ jobs, client, llm, execute = assemble, persi
       try {
         const result = await execute({ client, llm, args: saved.args, exec: { ...exec, signal: controller.signal },
           runId, prepared: { ...confirmed, source, state }, resume: mode === 'resume' })
+        if (afterComplete && result.status !== 'failed' && !controller.signal.aborted) {
+          try { result.delivery = await afterComplete(runId, { ...exec, signal: controller.signal }) }
+          catch (error) { result.delivery = { status: 'failed', error: error.message, note: '文案已保留，可仅重试输出物' } }
+        }
         return { status: result.status === 'failed' ? 'failed' : 'completed', output: JSON.stringify(result), detail: result.status }
       } catch (error) {
         const latest = await readJson(path.join(dir, 'run.json'), state)

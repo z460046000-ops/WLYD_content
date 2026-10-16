@@ -1,6 +1,6 @@
 {
   "name": "@wlyd/dsh-material-knowledge-assembly",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "独立 DSH 材料与知识组装插件",
   "license": "MIT",
   "type": "module",
@@ -18,7 +18,12 @@
     "docs/",
     "README.md",
     "cordis.patch.yml",
-    "memory.md"
+    "memory.md",
+    "orchestration/",
+    "prompts/",
+    "skills/",
+    "vendor/",
+    "scripts/check.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -26,13 +31,14 @@
     }
   },
   "dependencies": {
+    "docx": "9.11.0",
     "exceljs": "^4.4.0",
     "jszip": "^3.10.2",
     "mammoth": "^1.13.0",
     "pdf-parse": "^2.4.5"
   },
   "scripts": {
-    "check": "node --check src/index.js && node --check src/convert.js && node --check src/platform.js && node --check src/rules.js && node --check src/workflow.js && node --check src/generation.js && node --check src/content.js && node --check src/model.js && node --check src/scheduler.js && node --check src/schema.js && node --check src/panorama.js && node --check src/retrieval.js && node --check src/context.js && node --check src/prompts.js && node --check src/facts.js && node --check src/evidence-policy.js && node --check src/plan-model.js && node --check src/planning.js && node --check src/review.js && node --check src/store.js && node --check src/persistence.js && node --check src/tasks.js && node --check src/fact-cards.js && node --check src/draft-generation.js && node --check src/combined-writing.js && node --check src/chapters.js",
+    "check": "node scripts/check.mjs",
     "test": "node --test test/*.test.mjs"
   }
 }

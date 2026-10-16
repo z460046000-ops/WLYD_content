@@ -1,5 +1,56 @@
 # 测试记录
 
+## 2026-10-16：0.10.0 文案与输出物分离，未安装或重启
+
+用户确认五步方案后实施：文案快照与正文覆盖、MD/DOCX确定性导出、文档后独立HTML、状态摘要差异、宿主通知编排和角色模型配置。全局内容规则仍0.11.0，视觉提示词独立，未再改章节规则；从本机上次0.8.0升级仍需新plan/confirm，同0.11规则的有效规划不因换主题重新生成。
+
+### 自动化与整链
+
+- DSH同版本Node22.22.2：全套228/228通过，0失败、0取消、0跳过；38个src/orchestration模块语法通过，git diff --check通过。可选文档样例在本轮显式开启，故未跳过。
+- 真正执行本地流水线但用模拟模型/后端：确认规划→组稿文件落盘→MD/DOCX先就绪→独立presentation模型阶段→固定上游引擎HTML；不是只测字符串模板，也不称真实知识库或模型验收。HTML任务结果不能回写report。
+- 覆盖：2正文7材料卡只计2/9；零命中、检索失败/部分失败、用途不适配、超时、无正文分别记录；快照哈希不随主题/时间改变，正文/来源/条件/章节版本/确认和审核变化使旧产物过期。
+- 输出失败/取消保留文档；HTML进行中改正文，旧job结果也必须stale=true；换主题复用同版slides不再调模型；queued孤儿job识别中断并可重新提交。缺输入/空证据/撤权/伪造引文拒绝输出；发布HTML前再查权限。
+- 演示模型只选完整原文句段，按章有界分批；未知编号、新文案、漏条件/否定、提升能力或审核身份拒绝，降级原文分页并明确未精简。缓存同样验证正文、来源、条件、版本和审核，不能用手改slides升级事实。
+- 默认status的模型可见文本不含3.8MB运行模型日志，显式detail才返回完整内容；revision不变极小回复，有历史可返回差异；用户/run历史隔离，角色路由不会改原会话。有效已确认plan复用沿原校验，未增加不可靠自动缓存。
+
+### DOCX与HTML视觉检查
+
+- DOCX OOXML/Mammoth读回验证中文长段落、特殊字符、层级、来源、能力/候选标记与页码。使用workspace dependency loader返回的Node/Python和bundled LibreOffice渲染，最终合成样例6页逐页目视通过：中文可读、长段连续分页、材料卡及来源附录保留，无溢出。
+- 首轮字体缺失导致中文方块，已定位bundled headless fontconfig未找到用户字体，SAL_FONTPATH无效。适配器默认思源字体并支持options.fonts，声明zh-CN；QA用/tmp独立FONTCONFIG_FILE指向现有字体，不改全局字体或managed runtime。DOCX不嵌字体，其他设备Word/字体替代尚需人工验收。
+- 离线Chrome检查5页×1920×1080、1366×768、390×844：方向键、按钮、页码、全屏和来源dialog通过，0页面错误、0远程资源请求，各页无溢出。桌面/手机截图已目视。真实上游lint确认确定性、文字对比度、重叠均通过；首次合成时序问题修在输出适配器，没有改上游引擎。
+- xiaoma-studio固定commit `6f7b4927bf4be7f057e58269febf52200bb1f01f`，12份上游原始文件逐一SHA-256核对并保留MIT。引擎真实进入HTML、规则实际进入presentation请求并记录摘要；没有只装Codex全局skill冒充DSH接入。
+- 合成样例与QA结果在项目忽略目录`artifacts/qa-0.10.0/`；DOCX与HTML样例分别用于长文分页和演示交互验证，不是同份真实客户报告，未纳入npm包。
+
+### 修改文件与原因
+
+| 文件 | 原因 |
+|---|---|
+| src/content/snapshot.js、coverage.js | 稳定无版式文案版本、真实正文覆盖和缺章原因 |
+| src/draft-generation.js、workflow.js、content.js、chapters.js | 分类诊断落盘、主报告显示覆盖，改章保持最新指标 |
+| src/outputs/markdown.js、docx.js、registry.js | 同一文案确定性导出MD/DOCX，保持层级/引用/候选与材料卡 |
+| src/outputs/html-slides/、prompts/outputs/presentation.md | 独立关键句精简、严格来源映射、固定HTML渲染和可翻页交互 |
+| src/delivery/tasks.js、manifest.js | 先文档后独立宿主HTML、版本/过期、失败保稿、权限和重试 |
+| src/index.js、tasks.js、model.js | 第八个官方输出工具、自动输出接线、角色模型与presentation阶段 |
+| orchestration/、skills/wlyd-assembly-orchestrate/ | 模型侧状态摘要差异、复用job通知和安全plan复用、角色配置 |
+| vendor/xiaoma-studio/ | 固定上游skill/参考/引擎/lint及MIT来源和摘要 |
+| test/新增7组、review-regression.test.mjs | 内容契约、文档、HTML、输出生命周期、权限、编排和全链兼容 |
+| package.json、package-lock.json、scripts/check.mjs | 0.10.0、docx9.11.0依赖、资源白名单与递归语法检查 |
+| README、architecture、output-guide、backlog、content-output-plan、memory | 实际架构/路径/流程、遗留和验证边界 |
+
+### 尚未验证
+
+未用真实知识库/模型生成本版报告，不能保证他机七章缺正文已全部解决，也未实测用时/token收益；没有切换编排会话快路由。Wiki/图谱/FAQ、原文回读、自动跨知识版本缓存、真实身份映射、OCR/大文件、图形编辑器、PPTX/PDF/海报/视频仍待后续。主干正文和客户演示质量需用户验收，材料卡不当完成正文。
+
+本轮不安装插件、不修改DSH核心/profile、不重启3081或3080。包、SHA和安装说明交付后，等用户单独指令切换。包内文档为打包时快照，打包后补记不会覆盖同版包。
+
+### 0.10.0 安装包补记
+
+- `releases/wlyd-dsh-material-knowledge-assembly-0.10.0.tgz`：278727字节，82个白名单文件。SHA-256：`0bf5511f9e63b7f17f89e6b7077cfd05417fcd51b0c8ac17e35a60cf9c6d32eb`，已登记`releases/SHA256SUMS`。
+- 包内82文件逐字节等于打包时源码，独立审查确认必需模块/提示词/skill/上游引擎完整，无用户原料、测试样本、凭据或临时目录。
+- 将最终tgz解压到临时目录，用本仓库已安装依赖做Node22加载烟测：8个工具、1个编排skill、六章目录预览、MD/DOCX导出、嵌入上游引擎的HTML渲染通过。此为包加载验证，不是DSH安装或真实生成验收。
+- 上游随附render/lint工具有独立浏览器开发依赖；插件输出链路不调用这些CLI。HTML生成无需额外浏览器依赖。
+- 本补记和项目记忆在打包后追加；包内文档为打包时快照，不覆盖重打同版本tgz。未安装或重启DSH。
+
 ## 2026-10-16：0.9.0 前四项提速，未安装或重启
 
 用户确认实施：章内提取/撰写合并、逐章先交初稿再后台关联复核、宏观提取/规划合并、章节主查询一条且成功不足才补一条。知识库真实取材、用户确认大纲、引用和前后关联检查继续保留。全局规则0.11.0，之后切换安装时须重新plan/confirm，导入材料可复用。

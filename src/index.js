@@ -7,6 +7,12 @@ import { loadRules, validateOutline, requestedModes, applyModes, BUSINESS_MODES,
 import { planOutline, confirmOutline } from './planning.js'
 import { chapterAction } from './chapters.js'
 import { QUALITY_MODES } from './fact-cards.js'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { createDeliveryService } from './delivery/tasks.js'
+import { currentDelivery, deliverySummary } from './delivery/manifest.js'
+import { createStatusRenderer } from '../orchestration/status.js'
+import { roleRoute, roleExecution } from '../orchestration/routes.js'
 
 export const name = 'wlyd-material-knowledge-assembly'
 export const inject = ['tools', 'llm', 'fs', 'jobs']
@@ -27,8 +33,21 @@ const authorParameters = {
 
 export function apply(ctx, config = {}) {
   const client = new PlatformClient(resolveConfig(config))
-  const tasks = ctx.jobs ? createTaskService({ jobs: ctx.jobs, client, llm: ctx.llm }) : null
-  if (tasks) ctx.effect?.(() => () => tasks.close())
+  const writingRoute = roleRoute(config, 'writing'), presentationRoute = roleRoute(config, 'presentation')
+  const delivery = ctx.jobs ? createDeliveryService({ jobs: ctx.jobs, client, llm: ctx.llm, modelRoute: presentationRoute || writingRoute }) : null
+  const tasks = ctx.jobs ? createTaskService({ jobs: ctx.jobs, client, llm: ctx.llm, modelRoute: writingRoute,
+    afterComplete: (runId, exec) => delivery.submit({ run_id: runId }, exec) }) : null
+  if (tasks) ctx.effect?.(() => async () => { await tasks.close(); await delivery.close() })
+  const orchestrationSkill = readFileSync(new URL('../skills/wlyd-assembly-orchestrate/SKILL.md', import.meta.url), 'utf8')
+  ctx.inject?.(['skills'], skillCtx => {
+    skillCtx.skills.register({ name: 'wlyd-assembly-orchestrate', description: '先确认文案大纲，再交MD/DOCX和独立翻页HTML，使用宿主通知避免代理轮询',
+      source: 'runtime', content: orchestrationSkill.replace(/^---\n[\s\S]*?\n---\n/u, ''),
+      resourceBase: { kind: 'directory', path: fileURLToPath(new URL('../skills/wlyd-assembly-orchestrate/', import.meta.url)) } })
+  })
+  ctx.inject?.(['systemPrompt'], promptCtx => {
+    promptCtx.systemPrompt.section({ name: 'tool:wlyd-assembly', order: promptCtx.systemPrompt.getSectionOrder('TOOL_JOBS'),
+      text: '使用wlyd_assembly工具时：大纲必须由用户确认后再生成。generate提交一次后保留runId/jobId，等宿主完成通知再用job_output取结果；禁止sleep或代理循环轮询。文案完成先交MD/DOCX，独立HTML任务稍后交付；材料卡不算完整正文。需要主动查进度时status默认摘要，可传after_revision。仅改输出物用wlyd_assembly_output，不重新组稿。' })
+  })
   ctx.logger?.info?.(`wlyd assembly ${runtimeVersion} contract=2 jobs=${Boolean(tasks)}`)
   const register = tool => ctx.tools.register({ ...tool, parameters: parametersSchema(tool.parameters),
     execute: async (args, exec) => ({ ...await tool.execute(args, exec), runtimeVersion, contractVersion: 2 }) })
@@ -59,10 +78,16 @@ export function apply(ctx, config = {}) {
 
   register({
     name: 'wlyd_assembly_status',
-    description: '查看导入逐文件状态、大纲规划与确认状态，或生成运行的逐章提取/撰写/校验、全景补充及合稿必检进度。生成运行只读，不触发重新生成。',
-    parameters: { run_id: { type: 'string', required: true } }, output,
-    execute: async (args, exec) => tasks ? tasks.query(args.run_id, exec)
-      : observedTask(await status({ client, runId: args.run_id, agent: exec.agent, signal: exec.signal })),
+    description: '只读进度，默认向模型返回精简摘要和正文覆盖率；after_revision省略未变化字段，view=detail仅用于诊断。等待后台任务优先宿主完成通知和job_output wait=true，不代理轮询。',
+    parameters: { run_id: { type: 'string', required: true }, view: { type: 'string', enum: ['summary', 'detail'] }, after_revision: { type: 'string' } },
+    output: { ...output, render: createStatusRenderer() },
+    execute: async (args, exec) => {
+      const state = tasks ? await tasks.query(args.run_id, exec)
+        : observedTask(await status({ client, runId: args.run_id, agent: exec.agent, signal: exec.signal }))
+      if (state.actorDshId && state.actorDshId !== exec.agent.session?.user?.id) throw new Error('当前用户无权读取此运行')
+      if (state.kind === 'assembly-task' && state.reportReady) state.delivery = deliverySummary(await currentDelivery(exec.agent, args.run_id))
+      return state
+    },
     presentCall: args => card('查看解析状态', 'read', { runId: args?.run_id }),
   })
 
@@ -75,7 +100,7 @@ export function apply(ctx, config = {}) {
       template_id: { type: 'string' }, outline: { type: 'array', items: { type: 'object' } }, ...selectionParameters, ...authorParameters }, output,
     async execute(args, exec) {
       if (args.action && !['preview', 'plan', 'confirm'].includes(args.action)) throw new Error('未知 outline action，请使用 preview、plan 或 confirm')
-      if (args.action === 'plan') return planOutline({ client, llm: ctx.llm, args, exec })
+      if (args.action === 'plan') return planOutline({ client, llm: ctx.llm, args, exec: roleExecution(exec, writingRoute) })
       if (args.action === 'confirm') return confirmOutline({ args, exec })
       const rules = await loadRules(args.template_id || 'presales-solution')
       const original = validateOutline(args.outline || rules.template.sections, rules)
@@ -89,7 +114,7 @@ export function apply(ctx, config = {}) {
 
   register({
     name: 'wlyd_assembly_generate',
-    description: '只使用已确认大纲，提交宿主管理的后台组稿并立即返回 runId；用 status 查询，禁止循环重复 generate。同材料目录默认复用已有运行。mode=resume 携 run_id 接续检查点；mode=regenerate 明确重新生成。所有章节并行定向取证、提取和撰写，实际请求默认八路并受模型路由限流。合稿必检前后关联、能力证据、全景及矛盾；未查完不能通过。进程关闭后任务停止，可显式恢复。',
+    description: '只使用已确认大纲，提交宿主管理的组稿并立即返回runId/jobId。等宿主通知后job_output取结果，不sleep、不代理循环查status或重复generate。文案结束自动先交MD/DOCX，再提交独立翻页HTML任务。正文和材料卡分开统计。mode=resume接续，regenerate明确重做；关联必检与知识库取材继续保留。',
     parameters: {
       mode: { type: 'string', enum: ['start', 'resume', 'regenerate'], description: '默认 start；resume 接续旧运行；regenerate 明确重做' },
       quality_mode: { type: 'string', enum: QUALITY_MODES, description: '默认 draft：先出带标注初稿、每章有正文或待补卡；standard 最多一次修正；strict 保留严格验证链路' },
@@ -128,5 +153,19 @@ export function apply(ctx, config = {}) {
       confirmed: { type: 'boolean', description: '用户明确认可定稿或解锁后才设 true' } }, output,
     execute: (args, exec) => chapterAction({ client, llm: ctx.llm, args, exec }),
     presentCall: args => card('审阅与修改章节', args?.action === 'list' ? 'read' : 'write', { runId: args?.run_id, chapterKey: args?.chapter_key, action: args?.action }),
+  })
+  register({ name: 'wlyd_assembly_output',
+    description: '独立输出物：start从当前文案版本先导出MD/DOCX，再提炼关键点生成可自由翻页HTML；query查询产物和过期状态；cancel仅停止HTML。改主题复用同版演示稿，不检索或重写原文。HTML失败文档保留，可retry。',
+    parameters: { run_id: { type: 'string', required: true }, action: { type: 'string', enum: ['start', 'query', 'cancel'] },
+      format: { type: 'string', enum: ['all', 'documents', 'html'] }, theme: { type: 'string', enum: ['editorial', 'swiss', 'blueprint'] },
+      retry: { type: 'boolean' }, expected_content_sha256: { type: 'string', description: '可选，防止输出期间用了非预期的文案版本' } }, output,
+    execute: (args, exec) => {
+      if (!delivery) throw new Error('DSH jobs服务不可用，无法托管演示输出')
+      if (!args.action || args.action === 'start') return delivery.submit(args, exec)
+      if (args.action === 'query') return delivery.query(args.run_id, exec)
+      if (args.action === 'cancel') return delivery.cancel(args.run_id, exec)
+      throw new Error('未知输出操作')
+    },
+    presentCall: args => card('文档与演示输出', args?.action === 'query' ? 'read' : 'write', { runId: args?.run_id, format: args?.format, theme: args?.theme }),
   })
 }

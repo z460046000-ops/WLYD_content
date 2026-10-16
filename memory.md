@@ -421,3 +421,31 @@
 - 快稿首通复核将每段重复整窗引文投影为原文位置，完整引用和原文归档不改、取证去重后送入；分组计费含去重原文，五项/全段/全部显式关系保持，strict及改单章未启用该投影。六段复用同2400字符窗模拟从2组变1组；不当真实耗时证明。
 - Node22.22.2完整187/187和26模块语法通过。确认/授权、来源边界、长文尾部、空/截断响应、首章可读、复核继续、重复去重、取消保稿/恢复、版本和strict兼容有离线验证。真实模型/后端/用户质量/耗时、安装生效均未验收，不承诺固定分钟数。跨运行缓存（第五项）、多源FAQ/回读/改单章新检索、HTML美化仍待后续。
 - 0.9.0包198302字节、52文件，SHA-256 a458e7356baa18b335207ae42a4514dc850c85fa75879522017f063d16b7b8ea，白名单及打包时文件逐字节核对通过。独立只读审查未发现必须修复的阻断。包内文档为打包时快照，包元数据在打包后追加；未安装重启，后续必须等用户手动切换指令。
+
+## 2026-10-16：审阅外部0.8.0全链路计时报告
+
+- 用户提供Downloads/fullchain-timing-0.8.0-20261016.md并问可取之处。附件为Windows他机3081/profile web、glm-5.3-flash、run 9f5b4476-3c68-47a2-9d78-c0c7dcf3b4ae的汇总，不是本机运行验证。本文仅对照附件与0.8.0提交728ba98、当前0.9.0源码审阅，没有原始run/report/retrieval日志，未真实调用后端/模型。
+- 可采纳：拆分规划/生成/改单章计时，保留runtimeVersion和runId，真实comment→revise v1→v2样本，以及缺料素材指引。0.9.0已加入首章可读/全章产物可读/复核结束时点，并合并规划/提写、简化查询；这不等于已安装或实测速效。
+- 需纠正验收：附件仅2/9正文、7/9 needs_input，不能以9/9节点有产物和0 failed称完整组稿成功。先排查其余章节的真实命中、来源可用、提取/写作错误与用途过滤，不能仅凭汇总认定知识库确实缺材料。素材指引适用于确认缺事实后的补料。
+- 时间口径有待核对：generate 16:34:47→16:45:30约10分43秒，却另记16:56合稿复核；0.8.0源码是await复核后落总报告，可能混入章节修改后的复核或不同结束口径，需原始事件区分，不能直接当已验证总耗时。confirm→接纳11分钟缺工具/模型时间线，不直接归因网关；单轮观测下降70%不是等工作量性能结论。
+- 规划缓存可后续做，但不能只按project+audience复用，须绑定确认目录、身份/目标、材料/知识版本、权限与规则。有效已确认planId同版本输入未变可复用；0.9.0规则升级需重新plan/confirm。二次五分钟无实证。优先在用户指定切换后验收0.9.0正文覆盖与实际时点，不根据附件直接追加代码。
+- 本轮仅更新本项目memory.md记录评审依据；未改业务代码、包、安装或DSH进程。最小验证为阅读附件、对照历史/当前代码及git diff --check；正文语义、真实时长与缺料原因仍待原始日志和人工确认。
+
+## 2026-10-16：文案与输出物解耦、演示桥接与会话提速设计
+
+- 用户授权改进并接入xiaoma-studio：先交docx/md，再提取关键点、精简文案，生成给客户演示的可自由翻页HTML；要求文字规则独立，未来海报/视频复用。补充四项会话侧建议：等待不靠代理轮询、status摘要+差异、规划复用、编排快模型；已做不重复。按用户AGENTS复杂新增范围先设计待确认，未开始业务实现。
+- 只读当前0.9.0：status参数只有run_id、query返回完整run含modelRequests，没有阻塞等待或差异参数；不改插件时需DSH作业通知/前端轮询及工具结果进入LLM前的摘要适配。提示词说忽略日志不能省掉已进入上下文的包。安全规划复用不能只有项目+受众+规则，需目录/作者目标/材料知识范围版本/权限与确认状态；先用有效已确认ID，不能承诺二次五分钟。
+- 已读GitHub上游SKILL、slides、engine/package、MIT：有自由翻页/全屏幻灯片，engine依赖playwright-core做渲染检查；本次仅拟固定commit、保留许可证并引入所需幻灯片资源。没有安装全局skill或执行上游代码，不依赖旧插件；视频/音频工作流不扩大本次范围。
+- 新docs/content-output-plan-20261016.md定义内容快照与多格式适配、独立presentation.md桥接提示词、MD/DOCX先交、HTML独立宿主任务/源版本/过期标识、五步实现及逐步验证。DOCX输出当前未有须新增；同快照生成不二次写全文，演示精简引用sourceBlockIds和主线，保留条件/状态/候选身份，HTML失败不影响文档。只改视觉时不重查库或组全文。
+- 此轮仅新增方案文档、backlog链接和本记忆；未改源码、版本、安装包、DSH配置或进程。验证为代码/上游文档阅读、文档链接和差异检查；真实正文覆盖、时间归因、DOCX/HTML样稿与DSH通知/结果摘要接线尚未验证。DSH不重启的既有指令持续有效。
+
+## 2026-10-16：用户确认拆分，0.10.0文案与输出物独立实现
+
+- 已按确认方案实施。source仍report.json，content/snapshot投影稳定无版式版本；content/coverage区分正文/材料卡，draft-generation记录检索零命中/失败/部分、用途、模型超时/无正文，不把所有缺章归因为KB缺料。全局文字规则仍0.11.0，输出规则在prompts/outputs及vendor独立，不随视觉改章节提示词。
+- outputs/registry及MD/DOCX是确定性导出；html-slides按章每批约6000字符选择完整原文关键句、保留条件/否定/候选/主线和能力边界，失败原文分页明确未精简。缓存校验正文/来源/版本/审核，不允许手工篡改slides把未确认升级。固定上游xiaoma-studio commit6f7b4927bf4be7f057e58269febf52200bb1f01f，12原始文件SHA核对，MIT保留，实际skill参考进入presentation、真实runtime/deck进入独立离线HTML。
+- 新delivery宿主作业：main文案结束先交MD/DOCX，再另建HTMLjob；第八工具wlyd_assembly_output start/query/cancel、format all/documents/html、theme editorial/swiss/blueprint、retry和expected_content_sha256。独立export目录/最新指针，HTML失败或取消不动文档；改章后旧产物及旧job回报stale；换主题复用同版slides无模型/检索。输入或证据归档缺失/撤权/假引用拒绝导出，HTML发布前再核权限，queued孤儿可重试。
+- 已核目标DSH源码有tool-jobs onJobDone通知和job_output wait/timeout，故不重写DSH核心。新编排skill和短工具引导避免代理轮询；status模型侧render默认摘要+revision差异，完整状态仍在文件与显式detail，3.8MB日志不进默认上下文。有效已确认plan沿现有校验复用，不做只按project/audience的自动缓存。writingRoute/presentationRoute及环境变量让生成角色独立，未配置保留会话，未实际改DSH路由。
+- 验证Node22完整228/228，38模块语法及差异通过；模拟整链plan确认→文案→MD/DOCX→独立模型阶段→上游HTML已实际落盘。HTML离线Chrome5页×1920/1366/390，翻页/页码/全屏/来源、无远程请求与无溢出通过，原始上游lint确定性/对比度/重叠绿。DOCX长文6页实际渲染并逐页目视，中文/分页/引文/标记通过；fontconfig首次缺中文已用QA专用FONTCONFIG_FILE解决，默认思源字体且可配置，DOCX不嵌字体。样例在忽略目录artifacts/qa-0.10.0，文档/HTML为不同用途合成样例，不当业务验收。
+- README/architecture/output-guide/backlog/test-record/content-output-plan同步；新依赖docx9.11.0，包白名单含prompts/skills/vendor/orchestration。没有真实后端/模型验收和耗时统计，不能认定七章缺文已实测修复；Windows/Word和真实演示观感待用户确认。多源FAQ/回读/自动缓存/图形编辑/PPTX/PDF/海报视频未做。按持续指令不安装、不重启DSH、不改profile；交付包后等用户指令。
+
+- 0.10.0交付包278727字节、82文件，SHA-256 0bf5511f9e63b7f17f89e6b7077cfd05417fcd51b0c8ac17e35a60cf9c6d32eb。白名单/逐字节核对及独立审查通过，临时解包Node22烟测8工具/1skill/目录/MD/DOCX/HTML通过；依赖复用本仓库node_modules，非独立DSH安装。SHA已登记，测试记录补包信息，同版本不重打。仍未安装或重启，真实模型和用户质量待验收。
