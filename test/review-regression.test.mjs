@@ -36,13 +36,13 @@ test('模型 JSON 仅修复字符串控制字符和结构性尾随逗号，保�
   assert.deepEqual(await askModel(llm, { options: { provider: 'fake', model: 'fake' } }, undefined, { stage: 'write' }), expected)
 })
 
-test('六个官方工具均注册标准对象 schema，保留 required，且不改共享注册服务', async () => {
+test('七个官方工具均注册标准对象 schema，保留 required，且不改共享注册服务', async () => {
   const tools = []
   const register = tool => { tools.push(tool) }
   const ctx = { tools: { register } }
   apply(ctx)
   assert.equal(ctx.tools.register, register)
-  assert.equal(tools.length, 6)
+  assert.equal(tools.length, 7)
   for (const tool of tools) {
     assert.equal(tool.parameters.type, 'object')
     assert.equal(typeof tool.parameters.properties, 'object')

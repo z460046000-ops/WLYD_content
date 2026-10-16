@@ -9,6 +9,12 @@ import { stageContext } from './prompts.js'
 
 export const REVIEW_CHECKS = ['problem-solution', 'capability-evidence', 'scenario-panorama', 'trend-construction', 'contradictions-orphans']
 const REVIEW_VERSION = 3
+const CHAPTER_BATCH_CHARACTERS = 12000
+const CHAPTER_BATCH_BLOCKS = 10
+const RELATION_TARGET_CHARACTERS = 8000
+const RELATION_TARGET_BLOCKS = 10
+const RELATION_GROUP_CHARACTERS = 15000
+const RELATION_GROUP_BLOCKS = 12
 const refIds = block => Object.values(block.planRefs || {}).flat()
 const tokens = text => new Set(String(text).toLowerCase().match(/[a-z]{3,}|[\p{Script=Han}]{2}/gu) || [])
 const roleTargets = role => role === 'business-challenges' || role === 'policy-trends'
@@ -26,7 +32,7 @@ export function reviewGroups(sections, outline) {
   const roles = new Map(flattenOutline(outline).map(node => [node.key, node.roleId]))
   const all = sections.flatMap(section => section.blocks.map(block => ({ ...block, chapterKey: section.key, roleId: roles.get(section.key) })))
   const jobs = []
-  for (const section of sections) for (const [i, blocks] of itemBatches(section.blocks, 8000, 6).entries()) {
+  for (const section of sections) for (const [i, blocks] of itemBatches(section.blocks, CHAPTER_BATCH_CHARACTERS, CHAPTER_BATCH_BLOCKS).entries()) {
     jobs.push({ scope: `chapter:${section.key}:${i + 1}`, kind: 'chapter',
       blocks: blocks.map(block => ({ ...block, chapterKey: section.key, roleId: roles.get(section.key) })), index: [], relationships: [] })
   }
@@ -48,7 +54,7 @@ export function reviewGroups(sections, outline) {
     const expectedRoles = roleTargets(focus.roleId).filter(role => [...roles.values()].includes(role))
     const missingRoles = expectedRoles.filter(role => !candidates.some(block => block.roleId === role))
     // Keep every known edge, even when a large mainline requires several bounded batches.
-    const batches = itemBatches(targets, 6500, 7)
+    const batches = itemBatches(targets, RELATION_TARGET_CHARACTERS, RELATION_TARGET_BLOCKS)
     if (!batches.length) batches.push([])
     for (const [part, batch] of batches.entries()) relations.push({ focus, targets: batch,
       relation: { id: focus.id, focusId: focus.id, check: requiredRelation(focus.roleId),
@@ -70,8 +76,8 @@ export function reviewGroups(sections, outline) {
   for (const relation of relations) {
     const blocks = uniqueBlocks([relation.focus, ...relation.targets])
     const combined = uniqueBlocks([...(pending?.blocks || []), ...blocks])
-    const exceeds = pending && (pending.chapterKey !== relation.focus.chapterKey || combined.length > 9
-      || JSON.stringify(combined).length > 11000 || pending.relationships.length >= 4
+    const exceeds = pending && (pending.chapterKey !== relation.focus.chapterKey || combined.length > RELATION_GROUP_BLOCKS
+      || JSON.stringify(combined).length > RELATION_GROUP_CHARACTERS || pending.relationships.length >= 4
       || pending.relationships.some(row => row.focusId === relation.focus.id))
     if (exceeds) commit()
     if (!pending) pending = { kind: 'relationship', chapterKey: relation.focus.chapterKey, blocks: [], relationships: [], index: [] }
@@ -94,7 +100,8 @@ export function reviewGroups(sections, outline) {
   return jobs
 }
 
-export async function reviewAssembly({ request, common, plan, outline, sections, evidence, dir, state, saveState, signal, ruleFingerprint = null, validateBlock }) {
+export async function reviewAssembly({ request, common, plan, outline, sections, evidence, dir, state, saveState, signal, ruleFingerprint = null, validateBlock,
+  allowRepairs = true, splitOnResource = true }) {
   let current = structuredClone(sections)
   const records = [], repairs = [], reviewItems = []
   const cache = new Map(), repairCache = new Map()
@@ -157,7 +164,7 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
       await persist(); return record
     } catch (error) {
       if (signal?.aborted) throw error
-      if (['MODEL_CONTEXT_LIMIT', 'MODEL_OUTPUT_LIMIT', 'context_length_exceeded'].includes(error.code) && splitDepth < 2 && job.blocks.length > 1) {
+      if (splitOnResource && ['MODEL_CONTEXT_LIMIT', 'MODEL_OUTPUT_LIMIT', 'context_length_exceeded'].includes(error.code) && splitDepth < 2 && job.blocks.length > 1) {
         const mid = Math.ceil(job.blocks.length / 2)
         records.push({ scope: job.scope, round, fingerprint: hash, status: 'split', passed: false, error: error.message })
         for (const [i, blocks] of [job.blocks.slice(0, mid), job.blocks.slice(mid)].entries()) await inspect({ ...job,
@@ -177,7 +184,7 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
   if (signal?.aborted) throw signal.reason
   const repairJobs = first.flatMap((result, i) => result?.status === 'fulfilled' && result.value.repairNeeded ? [{ job: jobs[i], audit: result.value }] : [])
   // Commit repairs sequentially and revalidate sources; at most one small repair round.
-  for (const { job, audit } of repairJobs.slice(0, 3)) {
+  for (const { job, audit } of (allowRepairs ? repairJobs.slice(0, 3) : [])) {
     try {
       const blocks = job.blocks.map(block => ({ ...block, ...current.flatMap(section => section.blocks).find(row => row.id === block.id) }))
       const sources = citedEvidence(blocks, evidence)

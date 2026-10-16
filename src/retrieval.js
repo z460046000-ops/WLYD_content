@@ -130,6 +130,7 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
   const docsByBase = new Map()
   const hitIdsByBase = new Map()
   const chapterSelection = new Map()
+  const chapterHitIds = new Map()
   const supplemented = new Set()
   let prepared
   let restoring = deferInitialFlush
@@ -263,7 +264,7 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
       },
     })))
     const attempts = jobs.map(job => {
-      const key = JSON.stringify([job.baseId, job.documentIds, job.descriptor.query])
+      const key = JSON.stringify([job.baseId, job.documentIds, job.descriptor.chapterKey || '', job.descriptor.purpose, job.descriptor.query])
       const queuedAt = new Date().toISOString()
       const cacheHit = cache.has(key)
       if (!cacheHit) {
@@ -380,6 +381,9 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
     if (extraQueries.length) supplemented.add(node.key)
     const descriptors = chapterQueries(node, plan, rules, audience, extraQueries)
     const found = balanced(await runQueries(descriptors), descriptors, 8)
+    const hits = chapterHitIds.get(node.key) || new Set()
+    for (const item of found) hits.add(item.id)
+    chapterHitIds.set(node.key, hits)
     const terms = descriptors.map(item => item.query)
     // Remote hits already cover uploaded documents; do not append broad local copies to every chapter.
     const fromLocal = found.length ? [] : localFor(terms, 4)
@@ -395,6 +399,8 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
       await mkdir(chapterDir, { recursive: true, mode: 0o700 })
       await atomicJson(path.join(chapterDir, 'retrieval.json'), {
         chapterKey: node.key, roleId: node.roleId, evidenceIds: chosen.map(item => item.id),
+        knowledgeHitIds: [...hits], knowledgeHitCount: hits.size, knowledgeQueryCount: chapterQueriesLog.length,
+        knowledgeStatus: hits.size ? 'matched' : 'empty',
         queries: chapterQueriesLog, localSelected: fromLocal.map(item => item.id), planAnchors: anchors.map(item => item.id),
       })
     }
@@ -440,5 +446,8 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
     return [...selected].map(id => byId.get(id)).filter(Boolean)
   }
 
-  return { prepare, restoreEvidence, discover, forChapter, selectForSections, catalog, flush, coverage, issues, evidence }
+  return { prepare, restoreEvidence, discover, forChapter, selectForSections, catalog, flush, coverage, issues, evidence,
+    enforceKnowledge: Boolean(client),
+    chapterKnowledgeHits: key => [...(chapterHitIds.get(key) || [])],
+    chapterKnowledgeQueries: key => queries.filter(item => item.chapterKey === key).length }
 }

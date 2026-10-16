@@ -16,7 +16,7 @@ test('旧孤儿去重指针明确返回接纳失败，不能一直冒充排队',
   const source = await sourceEvidence(f.agent, confirmed.args)
   const selection = await resolveWritingModel(f.llm, f.agent)
   const key = sha256(JSON.stringify([confirmed.document.projectId, materialFingerprint(source), f.args.plan_sha256,
-    confirmed.rules.fingerprint, selection.provider, selection.model, selection.reasoningEffort || '', f.agent.session.user.id, '']))
+    confirmed.rules.fingerprint, selection.provider, selection.model, selection.reasoningEffort || '', f.args.quality_mode, f.agent.session.user.id, '']))
   const orphan = randomUUID()
   await reserveRun(rootOf(f.agent), key, orphan)
   const service = createTaskService({ ...f, execute: () => assert.fail('orphan must not execute') })

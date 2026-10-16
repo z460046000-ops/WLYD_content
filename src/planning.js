@@ -30,7 +30,10 @@ export async function planOutline({ client, llm, args, exec }) {
     const author = identity(args)
     const common = commonContext(rules, args)
     const evidence = await retrieval.discover({ light: true, context: [author.author_identity, author.domain, author.objective].filter(Boolean).join('；') })
-    if (!evidence.length) throw new Error('没有宏观规划所需的可核对资料，请检查知识库或导入材料')
+    const knowledgeHits = evidence.filter(row => row.kind === 'knowledge' && row.knowledgeBaseId && row.knowledgeId && row.chunkId).length
+    state.knowledgeHits = knowledgeHits
+    await saveState()
+    if (!knowledgeHits) throw new Error('规划阶段知识库检索零命中：请检查项目绑定、文档解析状态和检索接口；本地材料不能代替知识库命中创建大纲')
     const facts = await collectFacts({ request, common,
       node: { key: 'overview', title: '产品与业务宏观了解', roleId: 'custom' }, rule: {}, evidence, plan: {},
       onBatch: async () => {} })
@@ -53,7 +56,7 @@ export async function planOutline({ client, llm, args, exec }) {
     await writeJson(path.join(dir, 'overview-facts.json'), facts)
     Object.assign(state, { status: 'awaiting_confirmation', planSha256: hash })
     await saveState()
-    return { planId: runId, planSha256: hash, status: state.status, outline: resolved, choices: plan.choices,
+    return { planId: runId, planSha256: hash, status: state.status, knowledgeHits, outline: resolved, choices: plan.choices,
       author, chapterGuidance: plan.chapterGuidance, mainlines: plan.scenarios,
       capabilities: plan.capabilities, problems: plan.problems, trends: plan.trends,
       reviewItems: plan.reviewItems, note: '请展示粗目录和主线让用户确认；确认后调用 outline action=confirm，不能自行确认。修改目录需重新 action=plan。' }

@@ -9,6 +9,9 @@ import { assembleConfirmed, completeAudit } from './helpers.mjs'
 
 const section = (key, text = '用统一记录衔接团队之间的业务交接。') => ({ key, blocks: [{ id: `${key}-1`, text,
   supportMode: 'candidate', evidence: [] }] })
+const knowledgeClient = () => ({ projects: async () => { throw new Error('平台未配置') },
+  visibleProjectBases: async () => ['KB'], documents: async () => [{ id: 'D1', parse_status: 'completed' }],
+  search: async () => [{ chunk_id: 'C1', knowledge_id: 'D1', content: '产品支持统一维护线索状态，销售和客服依据同一记录协作。' }] })
 
 test('可变目录按层级保留失败必需章和部分正文，显式省略可选案例，不追加内部审核说明', () => {
   const report = { title: '客户协作方案', outline: [
@@ -86,7 +89,7 @@ test('组稿落盘时 report、run、status 同步真实缺章状态并交付独
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'wlyd-report-structure-'))
   const agent = { options: { provider: 'fake', model: 'fake' }, session: { header: { cwd } } }
   const exec = { agent, signal: new AbortController().signal }
-  const client = { projects: async () => { throw new Error('平台未配置') } }
+  const client = knowledgeClient()
   const ctx = { fs: { resolve: async value => value, stat: async () => ({ type: 'file', size: 50 }),
     readBytes: async () => Buffer.from('产品支持统一维护线索状态，销售和客服依据同一记录协作。') } }
   const input = await ingest({ ctx, client, args: { files: ['source.md'] }, exec })
@@ -103,7 +106,7 @@ test('组稿落盘时 report、run、status 同步真实缺章状态并交付独
     yield { type: 'text-delta', text: JSON.stringify(value) }
     yield { type: 'finish', reason: { kind: 'stop' } }
   } }
-  const result = await assembleConfirmed({ client, llm, args: { source_run_id: input.runId, outline }, exec })
+  const result = await assembleConfirmed({ client, llm, args: { source_run_id: input.runId, project_id: 'P1', outline }, exec })
   const report = JSON.parse(await readFile(result.jsonPath, 'utf8'))
   const state = await status({ client, runId: result.runId, agent })
   const text = await readFile(result.reportPath, 'utf8')
@@ -121,4 +124,26 @@ test('组稿落盘时 report、run、status 同步真实缺章状态并交付独
   assert.match(await readFile(result.reviewPath, 'utf8'), /模拟章节服务不可用|请核对客户适用范围/u)
   assert.deepEqual(review.raw.gaps, report.gaps)
   assert.ok(review.groups.find(group => group.key === 'service'))
+})
+
+test('全部章节模型失败仍交付带完整目录的失败记录，可按同一 runId 恢复', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'wlyd-report-all-failed-'))
+  const agent = { options: { provider: 'fake', model: 'fake' }, session: { header: { cwd } } }
+  const exec = { agent, signal: new AbortController().signal }
+  const client = knowledgeClient()
+  const ctx = { fs: { resolve: async value => value, stat: async () => ({ type: 'file', size: 50 }),
+    readBytes: async () => Buffer.from('产品支持统一维护线索状态，销售和客服依据同一记录协作。') } }
+  const input = await ingest({ ctx, client, args: { files: ['source.md'] }, exec })
+  const llm = { async *stream() { throw new Error('模型暂不可用') } }
+  const result = await assembleConfirmed({ client, llm, args: { source_run_id: input.runId, project_id: 'P1',
+    outline: [{ key: 'service', title: '协作服务', roleId: 'delivery-service', required: true }] }, exec })
+  const report = JSON.parse(await readFile(result.jsonPath, 'utf8'))
+  const state = await status({ client, runId: result.runId, agent })
+  assert.equal(result.status, 'failed')
+  assert.equal(state.status, 'failed')
+  assert.deepEqual(report.sections, [])
+  assert.equal(report.assemblyReview.passed, false)
+  assert.deepEqual(report.chapterOutcomes.map(row => row.status), ['failed'])
+  assert.match(await readFile(result.reportPath, 'utf8'), /## 协作服务/u)
+  assert.match(await readFile(result.reviewPath, 'utf8'), /模型暂不可用/u)
 })

@@ -129,7 +129,7 @@ test('共享模型额度覆盖同时生成的报告，排队取消不会消耗�
   await assert.rejects(mapConcurrent([1], async x => x, { concurrency: 0 }), /并发数/u)
 })
 
-test('永久失败只留下本章缺项，其他章节、规划和错误均保存；全失败诚实报错', async () => {
+test('永久失败只留下本章缺项，其他章节、规划和错误均保存；全失败返回待补目录', async () => {
   const f = await fixture(fakeModel(prompt => {
     if (prompt.chapter?.key === 'business-challenges') throw new Error('provider failure')
     return answerFor(prompt)
@@ -143,7 +143,10 @@ test('永久失败只留下本章缺项，其他章节、规划和错误均保�
     if (prompt.stage === 'extract') throw new Error('unavailable')
     return answerFor(prompt)
   }))
-  await assert.rejects(generateChapters(failed.options), /全部章节未完成/u)
+  const empty = await generateChapters(failed.options)
+  assert.deepEqual(empty.sections, [])
+  assert.equal(empty.review.passed, false)
+  assert.equal(empty.chapterOutcomes.filter(row => row.status === 'failed').length, flattenOutline(failed.options.outline).length)
   assert.ok(failed.state.chapters.every(c => c.status === 'failed' && c.extractAttempts === 2))
 })
 
@@ -151,7 +154,9 @@ test('上下文超限不重复同一章节请求，运行记录保留阶段和�
   const f = await fixture({ async *stream() {
     throw Object.assign(new Error('maximum context length exceeded'), { code: 'context_length_exceeded' })
   } })
-  await assert.rejects(generateChapters(f.options), /全部章节未完成.*上下文超限/u)
+  const empty = await generateChapters(f.options)
+  assert.deepEqual(empty.sections, [])
+  assert.equal(empty.review.status, 'partial')
   assert.ok(f.state.chapters.every(c => c.extractAttempts === 1 && c.writeAttempts === 0))
   assert.equal(f.state.modelRequests.length, flattenOutline(f.options.outline).length)
   assert.ok(f.state.modelRequests.every(r => r.code === 'MODEL_CONTEXT_LIMIT' && r.inputCharacters > 0 && r.finishedAt))
@@ -171,8 +176,9 @@ test('取消保留已完成章，停止启动排队章；生成状态查询不�
   const client = { visibleProjectBases: async () => ['K1'], documents: async () => [{ id: 'D1', parse_status: 'completed' }],
     search: async () => [{ chunk_id: 'C1', knowledge_id: 'D1', content: evidence[0].content }] }
   const llm = fakeModel(async (prompt, signal) => {
-    if (prompt.stage === 'write' && prompt.chapter?.key === 'product-architecture' && !cancellationStarted) {
+    if (prompt.stage === 'write' && prompt.chapter?.key === 'extra-3' && !cancellationStarted) {
       cancellationStarted = true
+      await delay(20)
       controller.abort(new Error('用户取消'))
     }
     await delay(prompt.chapter?.key === 'policy-trends' ? 1 : 10, undefined, { signal })

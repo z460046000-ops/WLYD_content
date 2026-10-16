@@ -5,14 +5,14 @@ import { FACT_SUBJECTS, FACT_PURPOSES } from './evidence-policy.js'
 import { stageContext, chapterContext } from './prompts.js'
 
 /** Extract each evidence batch once; on resource limits split the failed batch only. */
-export async function collectFacts({ request, common, node, rule, evidence, plan, signal, round = 0, onBatch = async () => {}, onProgress = async () => {} }) {
+export async function collectFacts({ request, common, node, rule, evidence, plan, signal, round = 0, tolerant = false, onBatch = async () => {}, onProgress = async () => {} }) {
   const result = { facts: [], writingOutline: [], retrievalQueries: [], gaps: [], reviewItems: [], batches: [] }
   const visit = async (batch, batchId, depth = 0, retry = false) => {
     if (signal?.aborted) throw abortError(signal)
     await onBatch()
     try {
       const raw = await request({ ...stageContext(common, 'extract'), stage: 'extract', chapter: node, chapterRule: chapterContext(rule, node, 'extract'),
-        plan, retrievalRound: round, batchId, evidence: batch,
+        plan, retrievalRound: round, batchId, evidence: batch, ...(tolerant ? { qualityMode: 'draft' } : {}),
         schema: { facts: [{ text: '简短事实或明确假设', topic: '简短主题，同一主题复用', supportMode: 'sourced/candidate',
           subject: FACT_SUBJECTS.join('/'), purpose: FACT_PURPOSES.join('/'), scope: 'customer/typical/vendor-internal/unknown',
           capabilityStatus: 'existing/pilot/planned/proposed/unknown', capabilityOwnership: 'self/third-party/customer/unknown',
@@ -28,6 +28,17 @@ export async function collectFacts({ request, common, node, rule, evidence, plan
     } catch (error) {
       if (signal?.aborted || error.name === 'AbortError') throw signal?.aborted ? abortError(signal) : error
       const kind = classifyModelFailure(error)
+      if (tolerant) {
+        const snippets = batch.filter(source => source.content.trim().length >= 6).map(source => ({
+          text: source.content.slice(0, 400), topic: '原文选段，尚未概括', supportMode: 'sourced', subject: 'unknown', purpose: 'unknown',
+          evidence: [{ id: source.id, quote: source.content.slice(0, 400) }] }))
+        result.facts.push(...snippets)
+        result.reviewItems.push(`本章提取未完成，暂用原文选段供初稿参考：${error.message}`)
+        result.batches.push({ batchId, status: 'source_excerpt', error: error.message, facts: snippets.length,
+          evidenceIds: batch.map(row => row.id) })
+        await onProgress(result)
+        return
+      }
       const canSplit = kind === 'context' || kind === 'output' && error.outputCharacters > 0
       if (canSplit && depth < 2 && (batch.length > 1 || batch[0]?.content.length > 900)) {
         result.batches.push({ batchId, status: 'split', error: error.message })

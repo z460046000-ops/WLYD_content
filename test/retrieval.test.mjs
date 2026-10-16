@@ -87,6 +87,8 @@ test('逐章只取相关片段与指定共享锚点，完整证据存档且来�
     capabilityIds: ['cap-1'], problemIds: [], trendIds: [], scenarioIds: [] }],
   capabilities: [{ id: 'cap-1', evidence: [{ id: firstId, quote: 'CallWan 支持知识检索' }] }] }
   const chapter = await retrieval.forChapter({ key: 'sales', roleId: 'business-challenges', title: '销售挑战' }, plan)
+  assert.ok(retrieval.chapterKnowledgeHits('sales').length > 0)
+  assert.ok(retrieval.chapterKnowledgeQueries('sales') > 0)
   assert.ok(!chapter.some(item => item.kind === 'material'))
   assert.ok(chapter.some(item => item.chunkId === 'C2'))
   assert.ok(!chapter.some(item => item.id === 'M3-1'))
@@ -105,6 +107,50 @@ test('逐章只取相关片段与指定共享锚点，完整证据存档且来�
   assert.ok(audit.queries.some(item => item.chapterKey === 'sales' && item.traceId === 'trace-1'))
   const perChapter = JSON.parse(await readFile(path.join(dir, 'chapters/sales/retrieval.json'), 'utf8'))
   assert.deepEqual(perChapter.evidenceIds, chapter.map(item => item.id))
+  assert.equal(perChapter.knowledgeStatus, 'matched')
+  assert.equal(perChapter.knowledgeHitCount, retrieval.chapterKnowledgeHits('sales').length)
+})
+
+test('逐章零命中时本地材料和规划锚点可见但不计入当次知识库命中', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'wlyd-retrieval-empty-'))
+  const anchor = { id: 'Kanchor', kind: 'knowledge', knowledgeBaseId: 'B1', knowledgeId: 'D1', chunkId: 'old',
+    content: '规划曾引用的知识库原文。' }
+  const local = { id: 'M1', kind: 'material', content: '本地材料记录业务流程。' }
+  const retrieval = createRetrieval({ client: { visibleProjectBases: async () => ['B1'],
+    documents: async () => [{ id: 'D1', parse_status: 'completed' }],
+    searchEvidence: async () => ({ items: [], status: 'completed', source: 'unified', partial: false }) },
+  projectId: 'P1', evidence: [local, anchor], dir, signal })
+  const selected = await retrieval.forChapter({ key: 'service', title: '服务', roleId: 'delivery-service' }, {
+    chapterGuidance: [{ key: 'service', capabilityIds: ['cap-1'] }],
+    capabilities: [{ id: 'cap-1', evidence: [{ id: anchor.id, quote: '规划曾引用的知识库原文' }] }],
+  })
+  assert.ok(selected.some(item => item.id === local.id))
+  assert.ok(selected.some(item => item.id === anchor.id))
+  assert.deepEqual(retrieval.chapterKnowledgeHits('service'), [])
+  const log = JSON.parse(await readFile(path.join(dir, 'chapters/service/retrieval.json'), 'utf8'))
+  assert.equal(log.knowledgeStatus, 'empty')
+  assert.equal(log.knowledgeHitCount, 0)
+  assert.ok(log.knowledgeQueryCount > 0)
+  assert.deepEqual(log.planAnchors, [anchor.id])
+})
+
+test('两个章节即使查询文字相同，也分别调用知识库检索', async () => {
+  let requests = 0
+  const retrieval = createRetrieval({ client: { visibleProjectBases: async () => ['B1'],
+    documents: async () => [{ id: 'D1', parse_status: 'completed' }],
+    searchEvidence: async () => { requests++; return { items: [row('C1', '统一记录支持团队协作。')],
+      status: 'completed', source: 'unified', partial: false } } },
+  projectId: 'P1', evidence: [], signal })
+  const plan = { chapterGuidance: [
+    { key: 'first', retrievalQueries: ['统一记录如何支持团队协作'] },
+    { key: 'second', retrievalQueries: ['统一记录如何支持团队协作'] },
+  ] }
+  await retrieval.forChapter({ key: 'first', title: '协作', roleId: 'delivery-service' }, plan)
+  const first = requests
+  await retrieval.forChapter({ key: 'second', title: '协作', roleId: 'delivery-service' }, plan)
+  assert.equal(requests, first * 2)
+  assert.equal(retrieval.chapterKnowledgeHits('first').length, 1)
+  assert.equal(retrieval.chapterKnowledgeHits('second').length, 1)
 })
 
 test('无后台时本地多片段按章选取，补查最多一轮且不重复原查询', async () => {

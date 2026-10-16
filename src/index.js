@@ -5,6 +5,8 @@ import { createTaskService, observedTask } from './tasks.js'
 import { createRequire } from 'node:module'
 import { loadRules, validateOutline, requestedModes, applyModes, BUSINESS_MODES, TREND_FRAMEWORKS } from './rules.js'
 import { planOutline, confirmOutline } from './planning.js'
+import { chapterAction } from './chapters.js'
+import { QUALITY_MODES } from './fact-cards.js'
 
 export const name = 'wlyd-material-knowledge-assembly'
 export const inject = ['tools', 'llm', 'fs', 'jobs']
@@ -90,6 +92,7 @@ export function apply(ctx, config = {}) {
     description: '只使用已确认大纲，提交宿主管理的后台组稿并立即返回 runId；用 status 查询，禁止循环重复 generate。同材料目录默认复用已有运行。mode=resume 携 run_id 接续检查点；mode=regenerate 明确重新生成。所有章节并行定向取证、提取和撰写，实际请求默认八路并受模型路由限流。合稿必检前后关联、能力证据、全景及矛盾；未查完不能通过。进程关闭后任务停止，可显式恢复。',
     parameters: {
       mode: { type: 'string', enum: ['start', 'resume', 'regenerate'], description: '默认 start；resume 接续旧运行；regenerate 明确重做' },
+      quality_mode: { type: 'string', enum: QUALITY_MODES, description: '默认 draft：先出带标注初稿、每章有正文或待补卡；standard 最多一次修正；strict 保留严格验证链路' },
       run_id: { type: 'string', description: 'mode=resume 必填，使用原生成 runId；不能填导入或规划 ID' },
       plan_id: { type: 'string', description: 'start/regenerate 必填：outline action=confirm 已确认的规划 ID' },
       plan_sha256: { type: 'string', description: 'start/regenerate 必填：已确认版本 SHA-256；恢复默认读取原参数' },
@@ -114,5 +117,16 @@ export function apply(ctx, config = {}) {
       return tasks.cancel(args.run_id, exec)
     },
     presentCall: args => card('停止后台组稿', 'write', { runId: args?.run_id }),
+  })
+  register({ name: 'wlyd_assembly_chapter',
+    description: '稿件生成后逐章迭代：list 查看版本/正文/意见；comment/question 仅记录用户意见；resolve 解决意见；revise 按要求修改本章或 block_ids，只复用本章事实卡并重查受影响关联，保留版本；approve 经用户确认定稿，reopen 经用户确认解锁。修改/定稿/解锁必传 list 返回的 expected_version。',
+    parameters: { run_id: { type: 'string', required: true }, action: { type: 'string', required: true,
+      enum: ['list', 'comment', 'question', 'resolve', 'revise', 'approve', 'reopen'] },
+      chapter_key: { type: 'string' }, expected_version: { type: 'integer', minimum: 1 },
+      text: { type: 'string', description: '评论、追问或解决说明' }, instruction: { type: 'string', description: '章节修改要求' },
+      note_id: { type: 'string' }, block_ids: { type: 'array', items: { type: 'string' }, description: '可选，只修改这些段落；省略则改本章' },
+      confirmed: { type: 'boolean', description: '用户明确认可定稿或解锁后才设 true' } }, output,
+    execute: (args, exec) => chapterAction({ client, llm: ctx.llm, args, exec }),
+    presentCall: args => card('审阅与修改章节', args?.action === 'list' ? 'read' : 'write', { runId: args?.run_id, chapterKey: args?.chapter_key, action: args?.action }),
   })
 }

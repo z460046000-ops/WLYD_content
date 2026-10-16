@@ -194,6 +194,7 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
   }
   await saveState()
   try {
+    const previousReport = resume ? await readJson(path.join(dir, 'report.json'), null) : null
     const source = prepared?.source || await sourceEvidence(exec.agent, args)
     const { evidence, gaps } = source
     state.projectId = source.projectId
@@ -222,10 +223,11 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
     const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
     const requiredGaps = incomplete.filter(row => row.required)
       .map(row => `${row.title}：必需章节${row.status === 'partial' ? '尚未完整' : '未成稿'}，原因见逐章运行记录`)
-    const reviewStatus = incomplete.length ? 'partial_draft' : 'needs_human_review'
+    const reviewStatus = ['draft', 'standard'].includes(args.quality_mode) ? 'draft_ready'
+      : generated.sections.length ? (incomplete.length ? 'partial_draft' : 'needs_human_review') : 'failed'
     const assemblyReview = { ...generated.review, ...(incomplete.length ? { passed: false,
       incompleteChapters: incomplete.map(row => row.key) } : {}) }
-    const report = { schemaVersion: 2, runId: outputId, title,
+    const report = { schemaVersion: 2, runId: outputId, title, qualityMode: args.quality_mode || 'strict',
       templateId: rules.template.id, outline: generated.outline, sections: generated.sections,
       chapterOutcomes: outcomes, omittedChapters: outcomes.filter(row => row.status === 'omitted'),
       choices: generated.choices, contentBalance: generated.contentBalance, validationIssues: generated.validationIssues,
@@ -234,12 +236,19 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
       gaps: [...new Set([...gaps, ...requiredGaps, ...generated.gaps])],
       evidenceIds: evidence.map(item => item.id), ruleFingerprint: rules.fingerprint, loadedRules: rules.loaded,
       reviewStatus, generatedAt: new Date().toISOString() }
+    if (previousReport?.chapterRecords) {
+      report.chapterRecords = previousReport.chapterRecords
+      for (const row of outcomes) if (report.chapterRecords[row.key] && row.version > report.chapterRecords[row.key].version) {
+        report.chapterRecords[row.key] = { ...report.chapterRecords[row.key], version: row.version, approvalStatus: 'pending' }
+      }
+    }
     const review = reviewDocument(report)
     await writeJson(path.join(dir, 'report.json'), report)
     await writeFile(path.join(dir, 'report.md'), reportText(report), { mode: 0o600 })
     await writeJson(path.join(dir, 'review.json'), review)
     await writeFile(path.join(dir, 'review.md'), reviewText(review), { mode: 0o600 })
     state.status = reviewStatus
+    state.qualityMode = report.qualityMode
     state.sections = report.sections.length; state.evidence = evidence.length
     state.missingChapters = incomplete.filter(row => row.status !== 'partial').map(row => row.key)
     state.partialChapters = outcomes.filter(row => row.status === 'partial').map(row => row.key)

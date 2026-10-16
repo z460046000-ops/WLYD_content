@@ -4,6 +4,8 @@ import { mapConcurrent, GENERATION_CONCURRENCY, abortError } from './scheduler.j
 import { flattenOutline, FRAMEWORK_DIMENSIONS } from './rules.js'
 import { validateDraft, PANORAMA_ROLES } from './content.js'
 import { createRetrieval } from './retrieval.js'
+import { generateFastDraft } from './draft-generation.js'
+import { factCards, attachCardEvidence } from './fact-cards.js'
 import { collectFacts } from './facts.js'
 import { classifyModelFailure } from './model.js'
 import { sha256 } from './store.js'
@@ -52,7 +54,7 @@ async function reusableChapter({ chapterDir, bindingSha256, evidence, node, plan
 function writingBatchSize(node, selection) {
   const foundational = ['business-challenges', 'scenario-solution', 'technical-platform'].includes(node.roleId)
   const panorama = PANORAMA_ROLES.includes(node.roleId)
-  const base = panorama ? { characters: 3600, count: 3 } : foundational ? { characters: 4200, count: 3 } : { characters: 5000, count: 5 }
+  const base = panorama ? { characters: 4800, count: 4 } : foundational ? { characters: 5200, count: 4 } : { characters: 5000, count: 5 }
   // A route with a small configured default benefits from smaller tasks, not a second output cap.
   return selection?.defaultMaxTokens > 0 && selection.defaultMaxTokens < 6000
     ? { characters: Math.min(base.characters, 2800), count: Math.min(base.count, 2) } : base
@@ -123,7 +125,7 @@ function depthBudget(node, nodes, outline, config) {
     guidance: '这是正文篇幅软目标；解决方案范围为全部子节点合计。本章须充分解释业务动作与价值机制，不靠重复、无据数字或新增能力凑比例' }
 }
 
-function linksFromPlan(plan, sections, outline) {
+export function linksFromPlan(plan, sections, outline) {
   const roles = new Map(flattenOutline(outline).map(node => [node.key, node.roleId]))
   const blocks = sections.flatMap(section => section.blocks.map(block => ({ ...block, roleId: roles.get(section.key) })))
   const links = []
@@ -166,6 +168,11 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
     retrieval = createRetrieval({ evidence, dir, signal: exec.signal, rules, outline, audience: args.audience })
     await retrieval.prepare()
   }
+  if (['draft', 'standard'].includes(args.quality_mode)) {
+    const draft = await generateFastDraft({ llm, exec, args, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan, resume })
+    return { ...draft, assemblyLinks: linksFromPlan(acceptedPlan, draft.sections, outline),
+      contentBalance: contentBalance(draft.sections, outline, rules.global.contentBalance) }
+  }
   const request = await createRequester({ llm, exec, state, saveState })
   const common = commonContext(rules, args)
   const plan = structuredClone(acceptedPlan)
@@ -203,18 +210,32 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
         depthBudget: depthBudget(node, nodes, outline, rules.global.contentBalance),
         selectedDimensions: FRAMEWORK_DIMENSIONS[node.framework] || [] }
       try {
-        const saved = resume ? await reusableChapter({ chapterDir, bindingSha256, evidence, node, plan,
-          completed: progress.status === 'completed' }) : null
+        const wasCompleted = progress.status === 'completed'
+        const knowledgeGate = retrieval.enforceKnowledge === true && typeof retrieval.chapterKnowledgeHits === 'function'
+        let queriedEvidence = null
+        if (knowledgeGate) {
+          progress.status = 'retrieving'; await saveState()
+          queriedEvidence = await retrieval.forChapter(node, plan)
+          progress.knowledgeHits = retrieval.chapterKnowledgeHits(node.key).length
+          progress.knowledgeQueries = retrieval.chapterKnowledgeQueries?.(node.key) ?? 0
+          progress.knowledgeStatus = progress.knowledgeHits ? 'matched' : 'empty'
+          progress.knowledgeIssue = progress.knowledgeHits ? null : '本章当次知识库检索零命中；本地材料和规划锚点不计为当次命中'
+          await saveState()
+        }
+        const saved = resume && (!knowledgeGate || progress.knowledgeHits) ? await reusableChapter({ chapterDir, bindingSha256, evidence, node, plan,
+          completed: wasCompleted }) : null
         if (saved) bodyFactsByKey.set(node.key, organizeChapterFacts(routeFacts(saved.extraction.facts, node, chapterRule).facts).facts)
         if (saved?.chapter) {
           progress.reusedChapter = true; progress.reusedExtraction = true; progress.resumeDecision = 'reused-completed-chapter'
+          progress.status = 'completed'
           delete progress.error; await saveState(); return saved.chapter
         }
         progress.reusedChapter = false; progress.reusedExtraction = !!saved
         progress.resumeDecision = saved ? 'reused-extraction' : resume ? 'checkpoint-unavailable-or-invalid' : 'new-chapter'
         delete progress.error
         if (!saved) { progress.status = 'retrieving'; await saveState() }
-        let chapterEvidence = saved?.chapterEvidence || await retrieval.forChapter(node, plan)
+        let chapterEvidence = saved?.chapterEvidence || queriedEvidence || await retrieval.forChapter(node, plan)
+        if (knowledgeGate && !progress.knowledgeHits) chapterEvidence = chapterEvidence.filter(row => row.kind === 'knowledge')
         const evidenceIds = new Set(chapterEvidence.map(row => row.id))
         // An injected retrieval adapter must register new sources as well.
         for (const source of chapterEvidence) if (!evidence.some(row => row.id === source.id)) evidence.push(source)
@@ -235,7 +256,14 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
         if (extraction.retrievalQueries.length) {
           progress.status = 'supplementing'; progress.supplementRounds = 1; await saveState()
           try {
-            const found = await retrieval.forChapter(node, plan, extraction.retrievalQueries)
+            let found = await retrieval.forChapter(node, plan, extraction.retrievalQueries)
+            if (knowledgeGate && !retrieval.chapterKnowledgeHits(node.key).length) found = found.filter(row => row.kind === 'knowledge')
+            if (knowledgeGate) {
+              progress.knowledgeHits = retrieval.chapterKnowledgeHits(node.key).length
+              progress.knowledgeQueries = retrieval.chapterKnowledgeQueries?.(node.key) ?? 0
+              progress.knowledgeStatus = progress.knowledgeHits ? 'matched' : 'empty'
+              progress.knowledgeIssue = progress.knowledgeHits ? null : '本章当次知识库检索零命中；本地材料和规划锚点不计为当次命中'
+            }
             const knownContent = new Set(chapterEvidence.map(row => row.content.trim()))
             const added = found.filter(row => !evidenceIds.has(row.id) && !knownContent.has(row.content.trim()))
             progress.supplement = { questions: extraction.retrievalQueries, newEvidenceCount: added.length, newFactsCount: 0 }
@@ -277,6 +305,7 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
         let serial = 0
         const blocks = [], validationIssues = []
         const bodyKeys = new Set()
+        const attemptedRepairs = new Set()
         const recordFailure = async (partId, error, issues = []) => {
           const message = error?.message || String(error)
           progress.failedBatches.push({ batchId: partId, error: message, ...(error?.code ? { code: error.code } : {}) })
@@ -291,25 +320,28 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
         const writePart = async (facts, partId, depth = 0, repairIssues = [], failedBlocks = []) => {
           progress.status = 'writing'; progress.writeAttempts++; await saveState()
           const supplied = citedEvidence(facts, chapterEvidence)
+          const cards = factCards(facts)
           const prompt = { ...base, stage: 'write', batchId: partId, evidence: supplied,
             chapterTopics: organized.topics,
-            extraction: { facts, writingOutline: strings(facts.map(fact => fact.topic || '本章相关内容')).map(topic => ({ topic })) },
+            extraction: { facts: cards, writingOutline: strings(facts.map(fact => fact.topic || '本章相关内容')).map(topic => ({ topic })) },
+            citationContract: '正文返回 factIds，程序从本批事实卡补原文引文；不要自行抄引文或编造编号',
             previousTopics: blocks.map(block => ({ id: block.id, navigationExcerpt: block.text.slice(0, 120) })), repairIssues, failedBlocks,
             schema: { sections: [{ key: node.key, title: node.title, blocks: [{ text: '完整主题正文', supportMode: 'sourced/candidate',
               ...(node.framework ? { dimension: 'selectedDimensions 中的一项，导语可省略' } : {}),
               ...(PANORAMA_ROLES.includes(node.roleId) ? { capabilityStatus: 'existing/pilot/planned/proposed/unknown', capabilityOwnership: 'self/third-party/customer/unknown' } : {}),
-              evidence: [{ id: '本批原文 ID', quote: '短的逐字引文' }],
+              factIds: ['本批事实卡ID'],
               planRefs: { capabilityIds: [], scenarioIds: [], problemIds: [], trendIds: [] } }] }], gaps: [], reviewItems: [] } }
           try {
             const draft = await request(prompt)
             await writeJson(path.join(chapterDir, `draft-${partId}.json`), draft)
             const raw = list(draft.sections).filter(section => section.key === node.key).flatMap(section => list(section.blocks))
-              .map((block, i) => ({ ...block, id: `${node.key}-${serial + i + 1}` }))
+              .map((block, i) => ({ ...attachCardEvidence(block, cards), id: `${node.key}-${serial + i + 1}` }))
             if (!raw.length) throw new Error('撰写没有返回本章正文段落')
             serial += raw.length
             const invalid = [], issues = []
             for (const block of raw) {
               try {
+                if (block.referenceWarnings?.length) throw new Error(block.referenceWarnings.join('；'))
                 validateBodyBlock(block, facts, chapterRule, supplied)
                 const checked = validateDraft({ sections: [{ key: node.key, blocks: [block] }] }, evidence, [node], plan)
                 if (checked.issues.length) throw new Error(checked.issues.join('；'))
@@ -323,8 +355,14 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
               failedBatches: progress.failedBatches })
             extraction.gaps.push(...strings(draft.gaps)); extraction.reviewItems.push(...strings(draft.reviewItems))
             if (invalid.length) {
-              if (!repairIssues.length) return writePart(facts, `${partId}-repair`, depth, issues, invalid)
-              await recordFailure(partId, new Error('局部修正后仍有段落未通过，保留本章有效正文'), issues)
+              const signature = strings(issues).sort().join('|')
+              if (!repairIssues.length && !attemptedRepairs.has(signature)) {
+                attemptedRepairs.add(signature)
+                return writePart(facts, `${partId}-repair`, depth, issues, invalid)
+              }
+              const reason = repairIssues.length ? '局部修正后仍有段落未通过，保留本章有效正文'
+                : '同类校验问题本章已修正过，保留有效正文并将缺项交给审核'
+              await recordFailure(partId, new Error(reason), issues)
             }
           } catch (error) {
             if (exec.signal?.aborted) throw error
@@ -352,18 +390,22 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
         progress.status = 'validating'; await saveState()
         if (!blocks.length) throw new Error(progress.failedBatches[0]?.error || '本章尚无通过校验的正文')
         const checked = validateDraft({ sections: [{ key: node.key, blocks }] }, evidence, [node], plan)
+        const knowledgeIssue = knowledgeGate && !progress.knowledgeHits
+          ? '本章当次知识库检索零命中；仅保留已确认规划的知识库锚点与待确认推演，请补查本章证据' : null
         const chapter = { section: checked.sections[0], validationIssues: strings([...validationIssues, ...checked.issues]),
-          gaps: strings(extraction.gaps), reviewItems: strings(extraction.reviewItems),
-          status: progress.failedBatches.length || checked.issues.length ? 'partial' : 'completed' }
+          gaps: strings([...extraction.gaps, ...(knowledgeIssue ? [knowledgeIssue] : [])]),
+          reviewItems: strings([...extraction.reviewItems, ...(knowledgeIssue ? [knowledgeIssue] : [])]),
+          status: progress.failedBatches.length || checked.issues.length || knowledgeIssue ? 'partial' : 'completed' }
         await writeJson(path.join(chapterDir, 'draft.json'), { sections: [{ key: node.key, blocks }] })
         await writeJson(path.join(chapterDir, 'chapter.json'), chapter)
         await saveCheckpoint(chapter.status === 'completed' ? chapter : null)
         progress.status = chapter.status; progress.path = `chapters/${node.key}/chapter.json`
-        if (chapter.status === 'partial') progress.error = '部分写作批次未完成，已保留通过校验的正文'
+        if (chapter.status === 'partial') progress.error = knowledgeIssue || '部分写作批次未完成，已保留通过校验的正文'
         await saveState()
         return chapter
       } catch (error) {
-        progress.status = exec.signal?.aborted ? 'cancelled' : 'failed'; progress.error = error.message
+        progress.status = exec.signal?.aborted ? 'cancelled' : 'failed'
+        progress.error = progress.knowledgeIssue ? `${progress.knowledgeIssue}；${error.message}` : error.message
         await writeJson(path.join(chapterDir, 'error.json'), { status: progress.status, error: error.message })
         await saveState(); throw error
       }
@@ -376,17 +418,25 @@ export async function generateChapters({ llm, exec, args, rules, outline, eviden
     throw error
   }
   const successful = results.filter(result => result.status === 'fulfilled' && result.value?.section).map(result => result.value)
-  if (!successful.length) throw new Error(`全部章节未完成；已保留逐章提取、错误和运行记录：${state.chapters.find(item => item.error)?.error || '无有效正文'}`)
-  const enriched = await enrichPanoramas({ request, common, plan, outline,
+  const enriched = successful.length ? await enrichPanoramas({ request, common, plan, outline,
     rules, chapters: successful, evidence, dir, state, saveState, signal: exec.signal,
     validateBlock: validatePostWriteBlock,
     selectEvidence: sections => citedEvidence([...sections.flatMap(section => section.blocks), ...plan.capabilities], evidence) })
+    : { chapters: [], reviewItems: ['所有章节均未取得可校验正文，目录保留待补'], validationIssues: [] }
   const omitted = new Set(state.chapters.filter(row => row.status === 'omitted').map(row => row.key))
   const activeOutline = nodes.filter(node => !omitted.has(node.key)).map(({ children, ...node }) => node)
-  const review = await reviewAssembly({ request, common, plan, outline: activeOutline,
+  const review = successful.length ? await reviewAssembly({ request, common, plan, outline: activeOutline,
     sections: enriched.chapters.map(row => row.section), evidence, dir, state, saveState, signal: exec.signal, ruleFingerprint: rules.fingerprint,
     validateBlock: validatePostWriteBlock })
-  const checked = validateDraft({ sections: review.sections, assemblyLinks: linksFromPlan(plan, review.sections, outline) }, evidence, outline, plan)
+    : { sections: [], reviewItems: ['暂无可复核正文，全部章节需补充或重试'], review: {
+      status: 'partial', passed: false, mode: 'chapter-and-relationships', groups: 0,
+      missingChapters: activeOutline.map(node => node.key), repairs: 0,
+      coverage: { paragraphs: { total: 0, completed: 0, uncheckedIds: [] },
+        relationships: { total: 0, completed: 0, uncheckedIds: [] }, reusedGroups: 0 } } }
+  if (!successful.length) state.review = review.review
+  const checked = review.sections.length
+    ? validateDraft({ sections: review.sections, assemblyLinks: linksFromPlan(plan, review.sections, outline) }, evidence, outline, plan)
+    : { sections: [], assemblyLinks: [], reviewItems: [], issues: [] }
   const balance = contentBalance(checked.sections, outline, rules.global.contentBalance)
   const gaps = [], reviewItems = [...plan.reviewItems, ...retrieval.issues, ...enriched.reviewItems, ...checked.reviewItems, ...balance.reviewItems, ...review.reviewItems]
   if (state.modelSelection.reasoningPolicy !== 'low') reviewItems.push(state.modelSelection.reasoningNote)

@@ -239,13 +239,15 @@ test('本地材料到报告保留来源、待确认候选与缺章；平台不�
     readBytes: async () => Buffer.from(['客户需要统一维护线索状态，销售和客服按同一记录协作。',
       ...Array.from({ length: 20 }, (_, index) => `补充材料 ${index + 1}：${'业务信息'.repeat(340)}`)].join('\n\n')),
   } }
-  const client = { projects: async () => { throw new Error('平台未配置') } }
+  const client = { projects: async () => { throw new Error('平台未配置') },
+    visibleProjectBases: async () => ['K1'], documents: async () => [{ id: 'D1', parse_status: 'completed' }],
+    search: async () => [{ chunk_id: 'C1', knowledge_id: 'D1', content: '客户需要统一维护线索状态，销售和客服按同一记录协作。' }] }
   const source = await ingest({ ctx, client, args: { files: ['客户资料.md'] }, exec })
   assert.equal(source.status, 'local_only')
   assert.equal(source.files[0].status, 'converted')
   assert.equal(source.files[0].uploadStatus, undefined)
   let materialPieces
-  const llm = draftModel({ title: '线索协作方案', sections: [
+  const draft = { title: '线索协作方案', sections: [
     { key: 'business-challenges', title: '业务挑战', blocks: [{
       text: '客户需要统一维护线索状态，销售和客服依据同一记录协作。',
       evidence: [{ id: 'M1-1', quote: '客户需要统一维护线索状态' }],
@@ -253,8 +255,12 @@ test('本地材料到报告保留来源、待确认候选与缺章；平台不�
     { key: 'scenarios', title: '典型业务场景方案', blocks: [{
       text: '建议探索跨团队线索交接场景，具体流程请客户核对。', supportMode: 'candidate', evidence: [],
     }] },
-  ], gaps: [] }, prompt => { materialPieces = prompt.evidence.length })
-  const result = await assembleConfirmed({ client, llm, args: { source_run_id: source.runId }, exec })
+  ], gaps: [] }
+  const llm = draftModel(draft, prompt => {
+    materialPieces = prompt.evidence.length
+    if (prompt.stage === 'write' && prompt.chapter.key === 'business-challenges') draft.sections[0].blocks[0].evidence[0].id = prompt.evidence[0].id
+  })
+  const result = await assembleConfirmed({ client, llm, args: { source_run_id: source.runId, project_id: 'P1' }, exec })
   assert.equal(result.status, 'partial_draft')
   assert.ok(!Object.hasOwn(result, 'modelRequests'))
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result)

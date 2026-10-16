@@ -4,6 +4,7 @@ import { normalizeFactMetadata, isHypothesis, internalNarrative } from './eviden
 const list = value => Array.isArray(value) ? value : []
 const strings = value => [...new Set(list(value).filter(item => typeof item === 'string' && item.trim()).map(item => item.trim()))]
 const validId = value => typeof value === 'string' && /^[a-z][a-z0-9-]*$/u.test(value)
+const speculativeCapability = /可考虑|待确认|尚待确认|需(?:进一步)?确认|拟(?:建设|实现|提供|支持|上线|交付)|(?:计划|规划)(?:建设|实现|提供|支持|上线|交付)/u
 const processLanguage = /粗目录|粗大纲|下一阶段|下阶段|下一步|待用户确认|用户确认后|不写(?:正文|全景)|暂不(?:展开|撰写)|后续(?:取证|阶段)/u
 const contentFocus = value => String(value || '').split(/[。；;，]/u).map(part => part.trim())
   .filter(part => part && !processLanguage.test(part)).join('；')
@@ -58,20 +59,26 @@ export function normalizePlan(raw, evidence, outline, args = {}, facts = []) {
       }
       if (requireSource && !refs.length) { issues.push(`规划能力 ${item.id} 缺少有效原文，未作为已具备能力使用`); return [] }
       const candidate = isHypothesis(item) || item.hypothesis === true
+        || field === 'capabilities' && (speculativeCapability.test(String(item.text)) || refs.some(ref => speculativeCapability.test(ref.quote)))
         || ['problems', 'trends'].includes(field) && /典型|假设|可能|可考虑|待确认|推测|推演|建议/u.test(String(item.text))
         || linkedFacts.some(fact => fact.supportMode === 'candidate' || isHypothesis(fact))
         || field === 'problems' && (subjects.some(subject => ['product', 'industry', 'company'].includes(subject))
           || purposes.some(purpose => !['business-problem', 'unknown'].includes(purpose)))
         || field === 'trends' && (subjects.some(subject => ['product', 'company'].includes(subject))
           || purposes.some(purpose => !['trend', 'unknown'].includes(purpose)))
+      if (field === 'capabilities' && candidate && ['existing', 'pilot'].includes(item.capabilityStatus)) {
+        issues.push(`规划能力 ${item.id} 为待确认候选，已撤销未经核实的已具备或试点状态`)
+      }
       seen.add(item.id)
       return [{ id: item.id, text: String(item.text), supportMode: refs.length && !candidate ? 'sourced' : 'candidate', evidence: refs,
         subject: metadata.subject,
         purpose: metadata.purpose,
         scope: candidate ? 'typical' : item.scope === 'customer' ? 'customer' : 'unknown',
         ...(field === 'capabilities' ? {
-          capabilityStatus: CAPABILITY_STATUSES.includes(item.capabilityStatus) ? item.capabilityStatus : 'unknown',
-          capabilityOwnership: CAPABILITY_OWNERS.includes(item.capabilityOwnership) ? item.capabilityOwnership : 'unknown',
+          capabilityStatus: candidate && ['existing', 'pilot'].includes(item.capabilityStatus)
+            ? 'unknown' : CAPABILITY_STATUSES.includes(item.capabilityStatus) ? item.capabilityStatus : 'unknown',
+          capabilityOwnership: candidate ? 'unknown'
+            : CAPABILITY_OWNERS.includes(item.capabilityOwnership) ? item.capabilityOwnership : 'unknown',
         } : {}) }]
     })
   }

@@ -1,5 +1,59 @@
 # 测试记录
 
+## 2026-10-16：0.8.0 打包、安装与重启
+
+- 安装包 `releases/wlyd-dsh-material-knowledge-assembly-0.8.0.tgz`，180134字节、50个白名单文件；SHA-256 `d8852ecfc2d7198f69c0d57455fe98a4a20949aec02dd03ef8f222292b876c54`，已登记 `releases/SHA256SUMS`。包内包含三个新模块，无原料、测试、凭证、`.tmp-extract/`及未跟踪的写作规范资料。
+- 安装前备份测试profile配置到 `/var/folders/7q/r6vzzstd75bbfqv8d2dvwz000000gn/T/wlyd-080-profile-1fdj3xxh`。通过DSH原生plugin命令更新 `wlyd-assembly-021-browser`，50个安装文件与tgz逐字节一致。
+- 完整重启3081，PID由70852变为47202，端口恢复，未登录HTTP为401。安装目录在DSH所用Node22.22.2下成功注册7个工具、chapter action包含revise、新规则为0.10.0。服务由独立终端会话保持运行。
+- 浏览器工具安全策略拒绝读取本地3081页面；未绕过限制，插件页的版本/运行状态仍需用户人工确认。本轮没有真实模型生成或后台检索验收，未证明十分钟出稿/六十秒改章。
+- 日常3080未被本轮安装/重启。收尾只读核对它由其他进程PID7047运行、安装版0.7.0，已不同于本轮开始的0.5.0旧记录；不能把其他会话更新归于本次发布。
+- 此段与README部署状态在打包后补记，包内文档为打包时快照，不覆盖重打同版本tgz。旧0.7.0包和配置备份保留供回退。
+
+修改文件及原因：
+
+| 文件 | 原因 |
+|---|---|
+| src/draft-generation.js、src/fact-cards.js（新增） | 快稿、事实卡ID、程序补引文、标注和材料卡 |
+| src/chapters.js（新增） | 章节意见、版本、定向修改、定稿与受影响关联复查 |
+| src/index.js、src/tasks.js | 第七工具、质量参数/默认值、任务去重隔离和真实进度 |
+| src/generation.js、src/review.js | 按质量模式路由、严格路径编号引用、首稿单轮检查与缓存复用 |
+| src/facts.js、src/context.js、src/model.js | draft提取降级、单请求窗口、事实卡指标及中断完整段保留 |
+| src/content.js、src/workflow.js | 新状态/标注/材料卡、正文审核落盘，续跑保留章节意见 |
+| src/planning.js、src/retrieval.js、src/plan-model.js | 真实知识库命中门槛、按章审计、候选能力口径修正 |
+| rules/global.json | 0.10.0编号引用、快稿与严格模式边界 |
+| test/fast-draft.test.mjs、test/candidate-boundary.test.mjs、test/knowledge-gate.test.mjs（新增）及受影响测试 | 验证快稿/迭代/权限/状态和原严格链路回归，旧fixture加入合法KB |
+| package.json、package-lock.json、releases/ | 0.8.0版本、25模块检查、可安装包与SHA-256 |
+| README.md、docs/architecture.md、docs/backlog.md、docs/test-record.md、memory.md | 当前规则/路径/流程、HTML skill待办、真实验证与遗留边界 |
+
+## 2026-10-16：0.8.0 快速初稿与章节迭代（安装前记录）
+
+用户确认《快Draft＋章节级迭代》实施范围：事实卡编号引用，默认 draft、首通不自动修正/补查/追加全景，五项关联检查一次；每章有正文或明确的 needs_input 材料卡；新增章节意见、定向修改、版本与人工定稿。此前未完成的候选身份、知识库命中门槛、严格模式合稿合批和零正文失败落盘一并完成。
+
+- Node.js 22.22.2（与 DSH 一致）执行全部自动化，163/163 通过；开发 Node.js 24.13.0 亦通过。25 个模块语法检查及 `git diff --check` 通过。
+- 新增七项快稿/迭代行为测试，覆盖：程序补引文、未知卡不伪造来源、非法数字与断言标注保留、每章正文/材料卡、提取失败使用标明的原文选段、完整段落截断保留、standard 最多一次修正、公开默认 draft、质量模式去重隔离、评论/追问/解决无模型调用、只改目标章、范围修改、版本保存、定稿/解锁、过期版本拒绝、权限变化拒绝、失败不覆盖原稿、续跑保留意见与已改正文。
+- 原严格路径、真实落盘的 plan→confirm→后台任务、取消/恢复、输入与授权、用途/引文/能力边界、完整关联覆盖回归继续通过。模型和后台均为测试替身，不将毫秒级模拟时间当作真实耗时。
+- `draft_ready` 表示全部章节节点有可见产物，含 `draft_unverified` 正文和 `needs_input` 材料卡；不是全部正文已完成或审核通过。首稿/迭代的机器 `passed` 不代替人工定稿。strict 仍区分部分稿与 failed。
+- 新规划需要项目知识库真实命中；确认记录与规则 0.10.0 指纹一致才能生成。规则变化后必须重新 plan/confirm，导入材料可复用。规划无知识库命中时明确停止；不会为追求有结果使用越权或虚构来源。
+- 本轮未重跑真实模型/后端，不声称达到十分钟首稿或六十秒改章；三分钟是 draft 单请求执行窗口，排队、多批事实提取和检查组会叠加。没有添加统一硬编码输出 token 预算。已有确认版本可直接用于后续生成；不采用仅按项目＋audience 自动复用规划，避免目录/目标/材料变化复用错版本。
+- 当前章节通过对话工具操作，无独立编辑页面；question 留存追问，不自动答复。权限恢复检查不能证明知识库文档具有不可变版本。report.json 为主稿件，视图文件非多文件事务；进程/磁盘异常时可能需重试刷新。未自动续写超时请求，保留已完整段落后由用户按章 revise 或显式 resume。
+- HTML 美化 xiaoma-studio 已加入待办，放在文档交付后；未安装接入。Wiki/图谱、后台原文回读、真实身份、OCR/链接、500MB端到端、HTML/PPTX/PDF原有边界保留。
+
+本节打包前仅确认源码与自动化；安装包校验、3081重启和界面结果在后续部署记录补充。日常3080未纳入本轮更新。
+
+
+## 2026-10-16：0.7.0 本机 DSH 浏览器实测
+
+- 在独立的 `http://127.0.0.1:3081/` 浏览器页面确认 `material-knowledge-assembly v0.7.0`、组件 1 个且运行中；日常 3080 未参与。本轮在 `gen` 工作区新建「CallWan 售前方案三章节规划」会话，只用官方 `wlyd_assembly_*` 工具。`wlyd_assembly_projects` 返回可访问的 `wancall` 项目（`7916c672-1640-4c17-acbc-5943caf65a5f`），未上传新文件。
+- 首次向 DSH 智能体描述三章但未给出完整 `outline` 数组，智能体调用 `action=plan` 时漏传该参数，得到默认全量模板，规划 ID `195a0ad5-5c6d-4e44-a99a-2c166783e670`。这是工具调用参数遗漏，不能把全量返回当成自定义目录成功。README 的测试提示词现已改为明确传入三项 `outline` 数组。
+- 再次显式传入三个必需顶层节点：`business-architecture`、`product-architecture`、`scenarios`（角色分别为 `business-architecture`、`product-architecture`、`scenario-solution`）。`action=plan` 返回且落盘三章目录，`planId=e3279823-5ae5-445a-9bc4-185f5649d52e`，`planSha256=33b93bdf60c2ef832ffec05e1589ea1183b4f63c88d63ef8aec53c94af87738d`。`wlyd_assembly_status` 正确返回 `awaiting_confirmation`，证明自定义目录及规划查询在实际 DSH 会话可用。
+- 三章规划使用同组 4 条知识库证据；宏观提取和规划各 1 次模型请求，`qifu/deepseek-v4.1-flash`，输入 7,466、输出 16,555、合计 24,021 tokens，规划墙钟约 156.5 秒（提取服务 105.8 秒，规划服务 50.6 秒）。提取首文本约 91.9 秒，模型未声明可用低思考档位，本轮未验证低思考生效。两阶段无超时、限流、重试或失败。此处为插件模型请求用量，不能与 DSH 整轮对话用量混为一谈。
+- 规划生成了四条能力→场景→问题→趋势主线，但 `scenarios` 章指引只列前三条；「业务架构全景」被改题为「客户增长业务全景与典型现状」，混入现状职责。六项能力 `supportMode=candidate` 却同时标 `capabilityStatus=existing`，其中 AgentWan 协同接口仍待确认；四个客户问题和四个趋势也全部为候选。`reviewItems` 为空，不能据此认定上述事实已经核实。这些是本次真实内容验收发现，需结合正文检查是否被误写成已交付、客户既有事实。
+- 用户在看到三章目录与主线后明确确认。DSH 的 `action=confirm` 返回 `confirmed`，随后只调用一次 `wlyd_assembly_generate mode=start`，接纳新运行 `dfeda489-016b-4584-8e2f-f9b46522d858`（初始 `queued`，`reused=false`）。
+- 运行在 2026-10-16 02:59:15–03:22:06 UTC 完成，墙钟约 22 分 51 秒，终态 `partial_draft`。三章都有正文：业务架构全景和产品功能全景为 `partial`，场景章为 `completed`；`report.md`、`review.md` 均已落盘。此结果证明生成链路可产出可审阅的部分草稿，不代表三章完整通过。产物目录：`/Users/zhangzhengao/Desktop/gen/artifacts/material-knowledge-assembly/runs/dfeda489-016b-4584-8e2f-f9b46522d858/`。
+- 生成阶段记录 51 次模型请求、合计 710,477 tokens：逐章提取 6 次、101,092 tokens；撰写 20 次、205,026 tokens；合稿复核 22 次、370,080 tokens；关联修正 3 次、34,279 tokens。各请求均无 API 级失败、超时或限流；并发服务时间不可相加当作墙钟。复核请求和用量最多，是本次精简的首要目标。
+- 两个全景章分别留存 5 个和 2 个失败写作批。失败文件主要记录“待确认内容写成了已发生事实”，模型局部修正后仍未通过；有效段落已保留。合稿检查覆盖 24/24 段和 10/10 条关联，但 `passed=false`，因为两个必需章仍是部分稿；覆盖完成不等于事实或质量通过。场景章虽标 `completed`，可见正文仍有“已有、自有产品能力”与 `candidate` 同段的口径冲突，需在后续实现和人工验收中处理。
+- 本轮只在本机测试 profile 操作；日常 3080 未更新。后续优化以保留事实和来源边界为前提，优先减少反复撰写与合稿模型调用，并保证局部失败时仍输出清晰标注的完整目录草稿。具体设计待用户确认，本轮不改生成代码。
+
 ## 2026-10-16：0.7.0 打包并更新本机测试 DSH
 
 - 远端 `main` 与本地源码提交 `c967151` 一致。Node.js 22.22.2 执行 `npm run check` 通过、`npm test` 142/142 通过。打包清单包含新 `src/prompts.js` 与规则；未跟踪的写作规范资料、`.tmp-extract/`、凭证和运行材料未入包。

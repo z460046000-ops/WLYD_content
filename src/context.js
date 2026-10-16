@@ -29,12 +29,16 @@ export async function createRequester({ llm, exec, state, saveState }) {
       inputCharacters: input.length, inputBytes: Buffer.byteLength(input), inputCharacterUnit: 'UTF-16',
       evidenceCount: supplied.length, evidenceIds: supplied.map(item => item.id),
       evidenceCharacters: supplied.reduce((n, item) => n + item.content.length, 0),
+      factCardCount: list(prompt.facts || prompt.extraction?.facts).length,
+      ...(prompt.qualityMode ? { qualityMode: prompt.qualityMode } : {}),
       ...selection, outputBudgetSource: stageOutputBudget(prompt.stage, selection) === undefined ? 'adapter-default' : 'plugin-config',
       resumeAttempt: state.resumeCount || 0, startedAt: new Date().toISOString(), status: 'pending' }
     state.modelRequests.push(record); await saveState()
     try {
       const result = await askModel(llm, exec.agent, exec.signal, prompt, { modelSelection: selection,
-        maxTokens: stageOutputBudget(prompt.stage, selection), onMetrics: metrics => Object.assign(record, metrics) })
+        maxTokens: stageOutputBudget(prompt.stage, selection),
+        ...(prompt.qualityMode === 'draft' ? { timeoutMs: 180000 } : {}),
+        onMetrics: metrics => Object.assign(record, metrics) })
       record.status = 'completed'
       return result
     } catch (error) {

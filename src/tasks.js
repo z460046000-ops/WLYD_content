@@ -7,6 +7,7 @@ import { assemble, status } from './workflow.js'
 import { rootOf, runPath, sourceEvidence, sha256, clone } from './store.js'
 import { atomicJson, readJson, reserveRun, claimRun, processAlive } from './persistence.js'
 import { resolveWritingModel } from './model.js'
+import { qualityMode } from './fact-cards.js'
 
 export const ACTIVE_STATUSES = new Set(['admission_pending', 'queued', 'collecting_evidence', 'generating', 'enriching_panoramas', 'reviewing', 'cancelling'])
 export function materialFingerprint(source) {
@@ -19,7 +20,9 @@ export function taskProgress(state) {
     partial: chapters.filter(row => row.status === 'partial').length,
     omitted: chapters.filter(row => row.status === 'omitted').length,
     failed: chapters.filter(row => row.status === 'failed').length,
-    pending: chapters.length ? chapters.filter(row => !['completed', 'partial', 'omitted', 'failed', 'cancelled'].includes(row.status)).length : state.expectedChapters || 0,
+    draft: chapters.filter(row => row.status === 'draft_unverified').length,
+    needsInput: chapters.filter(row => row.status === 'needs_input').length,
+    pending: chapters.length ? chapters.filter(row => !['completed', 'partial', 'omitted', 'failed', 'cancelled', 'draft_unverified', 'needs_input'].includes(row.status)).length : state.expectedChapters || 0,
     cancelled: chapters.filter(row => row.status === 'cancelled').length,
     remainingUnit: '章节节点（不是预计时间）' }
 }
@@ -72,6 +75,8 @@ export function createTaskService({ jobs, client, llm, execute = assemble, persi
       args = { ...saved.args, ...args }
     }
     const confirmed = await confirmedPlan({ args, exec })
+    if (saved && args.quality_mode !== undefined && args.quality_mode !== saved.args.quality_mode) throw new Error('恢复不能更改 quality_mode，请明确重新生成')
+    confirmed.args.quality_mode = qualityMode(args.quality_mode ?? saved?.args?.quality_mode ?? 'draft')
     const source = await sourceEvidence(exec.agent, confirmed.args)
     const materialHash = materialFingerprint(source)
     if (saved && (saved.materialSha256 !== materialHash || saved.planSha256 !== args.plan_sha256
@@ -94,7 +99,7 @@ export function createTaskService({ jobs, client, llm, execute = assemble, persi
       await persist(path.join(proposalDir, 'run-input.json'), saved)
       await persist(path.join(proposalDir, 'run.json'), admission)
       const key = sha256(JSON.stringify([confirmed.document.projectId, materialHash, args.plan_sha256,
-        confirmed.rules.fingerprint, modelSelection.provider, modelSelection.model, modelSelection.reasoningEffort || '',
+        confirmed.rules.fingerprint, modelSelection.provider, modelSelection.model, modelSelection.reasoningEffort || '', confirmed.args.quality_mode,
         exec.agent.session?.user?.id || null, mode === 'regenerate' ? proposal : '']))
       runId = await reserveRun(root, key, proposal)
       if (runId !== proposal) {
@@ -139,7 +144,7 @@ export function createTaskService({ jobs, client, llm, execute = assemble, persi
       try {
         const result = await execute({ client, llm, args: saved.args, exec: { ...exec, signal: controller.signal },
           runId, prepared: { ...confirmed, source, state }, resume: mode === 'resume' })
-        return { status: 'completed', output: JSON.stringify(result), detail: result.status }
+        return { status: result.status === 'failed' ? 'failed' : 'completed', output: JSON.stringify(result), detail: result.status }
       } catch (error) {
         const latest = await readJson(path.join(dir, 'run.json'), state)
         latest.status = controller.signal.aborted ? 'cancelled' : 'failed'; latest.error = error.message

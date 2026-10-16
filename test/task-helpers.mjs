@@ -83,9 +83,11 @@ export async function taskFixture(options = {}) {
   await writeFile(path.join(dir, 'run.json'), JSON.stringify({ runId: sourceRunId, files: [
     { name: 'input.md', status: 'converted', materialPath: 'materials/input.md', contentSha256: sha256(content) },
   ] }))
-  const args = await confirmedArgs({}, { source_run_id: sourceRunId, ...options }, exec)
+  const client = { visibleProjectBases: async () => ['KB'], documents: async () => [{ id: 'D1', parse_status: 'completed' }],
+    search: async () => [{ chunk_id: 'C1', knowledge_id: 'D1', content }] }
+  const args = await confirmedArgs(client, { project_id: 'P1', source_run_id: sourceRunId, quality_mode: 'strict', ...options }, exec)
   const llm = { resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }] } }) }
-  return { cwd, agent, controller, exec, args, llm, client: {}, sourceRunId, materialFile, sourceDir: dir, jobs: fakeJobs(), hostname: hostname() }
+  return { cwd, agent, controller, exec, args, llm, client, sourceRunId, materialFile, sourceDir: dir, jobs: fakeJobs(), hostname: hostname() }
 }
 
 export async function finishFakeTask(options, extra = {}) {

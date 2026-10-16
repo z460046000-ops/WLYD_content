@@ -4,23 +4,49 @@ export const PANORAMA_ROLES = ['business-architecture', 'product-architecture']
 export const CAPABILITY_STATUSES = ['existing', 'pilot', 'planned', 'proposed', 'unknown']
 export const CAPABILITY_OWNERS = ['self', 'third-party', 'customer', 'unknown']
 
+// Remove an explicitly denied assertion, but keep any separate positive assertion in the same sentence.
+function affirmativeClaims(text) {
+  const claim = '(?:已有|自有|现有|已具备|已实现|已上线|已交付|已获得|已经具备|已经实现|已经上线|已经交付|已经获得|现已支持|已经支持|全面具备|全面上线|全面支持|全面交付|自主研发|自主开发|自研|保证|承诺|具备|支持|提供|实现)'
+  return String(text || '').replace(new RegExp(`(?:不能|不得|不应|不可|不宜|不把|不将|不作为|不代表|不等于|不意味着|不是|并非|不属于|尚未|还未|并未|暂未|尚无|暂无|没有|非)[^，,。；;！？!?但却而]{0,14}?${claim}(?:[、和及或/\\s]+${claim})*`, 'gu'), '')
+}
+
+const existingCapabilityClaim = /现有(?:的)?(?:产品|能力|功能|平台|系统|模块|服务|工具|组件)/u
+const certainCapabilityClaim = /已有|自有|已具备|已经具备|已实现|已经实现|已上线|已经上线|已交付|已经交付|现已支持|已经支持|自主研发|自主开发|自研/u
+function assertedProductAbility(text) {
+  return String(text || '').split(/[，,。；;！？!?]/u).some(clause => {
+    const match = /(?:本产品|本平台|平台|产品|我司|公司)(?:具备|支持|提供|实现)/u.exec(clause)
+    return match && !/(?:可考虑|建议|拟|计划|待确认|如果|假设)[^但却而]*$/u.test(clause.slice(0, match.index))
+  })
+}
+
 function capabilityBoundary(block, planRefs, plan, candidate) {
   for (const [field, allowed] of [['capabilityStatus', CAPABILITY_STATUSES], ['capabilityOwnership', CAPABILITY_OWNERS]]) {
     if (block[field] !== undefined && !allowed.includes(block[field])) return { error: `${field} 无效` }
   }
   const capabilities = (plan.capabilities || []).filter(item => planRefs.capabilityIds.includes(item.id))
-  const states = capabilities.map(item => item.capabilityStatus || 'unknown')
-  const owners = capabilities.map(item => item.capabilityOwnership || 'unknown')
+  // Older confirmed plans may still carry candidate + existing/self labels.
+  const states = capabilities.map(item => item.supportMode === 'candidate' && ['existing', 'pilot'].includes(item.capabilityStatus)
+    ? 'unknown' : item.capabilityStatus || 'unknown')
+  const owners = capabilities.map(item => item.supportMode === 'candidate' ? 'unknown' : item.capabilityOwnership || 'unknown')
+  const hasCandidateCapability = capabilities.some(item => item.supportMode === 'candidate')
   const inferredStatus = ['planned', 'proposed', 'pilot', 'unknown', 'existing'].find(value => states.includes(value)) || 'unknown'
   const mixedStatus = new Set(states.filter(value => value !== 'unknown')).size > 1
   const mixedOwnership = new Set(owners.filter(value => value !== 'unknown')).size > 1
   const capabilityStatus = mixedStatus ? 'unknown' : block.capabilityStatus || (candidate ? 'proposed' : inferredStatus)
   const capabilityOwnership = mixedOwnership ? 'unknown' : block.capabilityOwnership || (owners.length && new Set(owners).size === 1 ? owners[0] : 'unknown')
+  if (hasCandidateCapability && (['existing', 'pilot'].includes(capabilityStatus) || capabilityOwnership === 'self')) {
+    return { error: '待确认能力被升级为已具备、试点或自有能力' }
+  }
   if ((candidate && capabilityStatus === 'existing' && (!states.length || states.some(value => value !== 'existing'))) ||
     (capabilityStatus === 'existing' && states.some(value => ['planned', 'proposed', 'pilot'].includes(value)))) {
     return { error: '候选、试点或规划能力被升级为已具备' }
   }
   const text = String(block.text || '')
+  const affirmative = affirmativeClaims(text)
+  if ((hasCandidateCapability || candidate && (!capabilities.length || capabilities.some(item => item.supportMode !== 'sourced' || item.capabilityStatus !== 'existing'))) &&
+    (certainCapabilityClaim.test(affirmative) || existingCapabilityClaim.test(affirmative) || assertedProductAbility(affirmative))) {
+    return { error: '待确认能力写成了已有或自有能力' }
+  }
   const positiveClaims = text.split(/[，,。；;！？!?]/u).filter(clause => !/不能|不得|不应|不把|不写|不作为|不代表|不等于|不意味着|尚未|还未|并未|暂未|尚不|暂不|并不|不是|并非|不属于|非自研|非自主/u.test(clause)).join('，')
   const stateClaim = positiveClaims.replace(/未(?:全面具备|全面上线|全面支持|全面交付|已具备|已实现|已上线|已交付|现已支持|已经支持)/gu, '')
   if (!mixedStatus && (['planned', 'proposed'].includes(capabilityStatus) || states.some(value => ['planned', 'proposed'].includes(value))) &&
@@ -46,8 +72,8 @@ export function chapterOutcomes(report) {
     if (status === 'omitted' && (node.required !== false || hasContent)) status = hasContent ? 'partial' : 'failed'
     if (status === 'completed' && !hasContent) status = 'failed'
     if (status === 'partial' && !hasContent) status = 'failed'
-    if (!['completed', 'partial', 'omitted', 'failed', 'cancelled'].includes(status)) status = hasContent ? 'partial' : 'failed'
-    if (hasContent && !['completed', 'omitted'].includes(status)) status = 'partial'
+    if (!['completed', 'partial', 'omitted', 'failed', 'cancelled', 'draft_unverified', 'needs_input'].includes(status)) status = hasContent ? 'partial' : 'failed'
+    if (hasContent && !['completed', 'omitted', 'draft_unverified'].includes(status)) status = 'partial'
     return { ...row, key: node.key, title: node.title, required: node.required !== false, status }
   })
 }
@@ -58,8 +84,15 @@ export function reportText(report) {
   const byOutcome = new Map(outcomes.map(row => [row.key, row]))
   const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
   const lines = [`# ${report.title}`, '']
-  if (incomplete.length || report.reviewStatus === 'partial_draft') {
+  if (report.qualityMode && report.qualityMode !== 'strict') {
+    lines.push('> 可编辑初稿：各章已保留正文或待补材料卡。未验证和待确认内容需逐章核对后使用。', '')
+  } else if (report.reviewStatus === 'failed') {
+    lines.push('> 生成未完成：没有可校验正文。以下保留已确认目录，待恢复后补充。', '')
+  } else if (incomplete.length || report.reviewStatus === 'partial_draft') {
     lines.push('> 部分草稿：仍有章节未完成。已保留可用正文，请结合独立审核清单确认后使用。', '')
+  }
+  if (report.assemblyReview?.passed === false && report.reviewStatus !== 'failed') {
+    lines.push('> 合稿复核未通过，须查看独立审核清单。', '')
   }
   const hasContent = node => byOutcome.get(node.key)?.status !== 'omitted' || (node.children || []).some(hasContent)
   const visit = (nodes, depth) => {
@@ -68,7 +101,13 @@ export function reportText(report) {
       lines.push(`${'#'.repeat(depth)} ${node.title}`, '')
       const section = byKey.get(node.key)
       const outcome = byOutcome.get(node.key)
-      if (outcome?.status === 'partial') lines.push('> 本章尚未完整，以下保留已通过校验的内容。', '')
+      if (report.chapterRecords?.[node.key]?.approvalStatus === 'approved') lines.push('> 本章已由用户确认。', '')
+      else if (outcome?.status === 'draft_unverified') lines.push('> 本章为待审初稿，可按章提出修改要求。', '')
+      else if (outcome?.status === 'needs_input') {
+        lines.push(`> 待补材料：${section?.inputNeeded?.reason || outcome.error || '尚缺本章资料'}`, '')
+        for (const question of section?.inputNeeded?.questions || []) lines.push(`- ${question}`)
+        lines.push('', section?.inputNeeded?.nextAction || '补充材料后按章修改。', '')
+      } else if (outcome?.status === 'partial') lines.push('> 本章尚未完整，以下保留已通过校验的内容。', '')
       else if (outcome?.status !== 'omitted' && !section?.blocks?.length) lines.push('> 本章尚未完成，待补充。', '')
       if (section?.framework && FRAMEWORK_DIMENSIONS[section.framework]) {
         lines.push(`分析框架：${section.framework === 'pest' ? 'PEST' : '管理、业务、技术'}`, '')
@@ -123,6 +162,8 @@ export function reviewDocument(report) {
   return { schemaVersion: 1, runId: report.runId, reviewStatus: report.reviewStatus,
     generatedAt: report.generatedAt, chapterOutcomes: outcomes,
     summary: { uniqueItems: items.length, sourceItems: items.reduce((count, item) => count + item.occurrences, 0),
+      draftChapters: outcomes.filter(row => row.status === 'draft_unverified').length,
+      needsInputChapters: outcomes.filter(row => row.status === 'needs_input').length,
       completedChapters: outcomes.filter(row => row.status === 'completed').length,
       partialChapters: outcomes.filter(row => row.status === 'partial').length,
       failedChapters: outcomes.filter(row => ['failed', 'cancelled'].includes(row.status)).length,
@@ -134,7 +175,7 @@ export function reviewDocument(report) {
 
 export function reviewText(review) {
   const byId = new Map(review.items.map(item => [item.id, item]))
-  const lines = ['# 内部审核清单', '', `稿件状态：${review.reviewStatus === 'partial_draft' ? '部分草稿' : '待人工审核'}`, '',
+  const lines = ['# 内部审核清单', '', `稿件状态：${review.reviewStatus === 'failed' ? '生成失败' : review.reviewStatus === 'partial_draft' ? '部分草稿' : '待人工审核'}`, '',
     `审核事项：${review.summary.uniqueItems} 项（原始记录 ${review.summary.sourceItems} 条，重复内容已合并）。`, '']
   const omitted = review.chapterOutcomes.filter(row => row.status === 'omitted')
   if (omitted.length) lines.push('## 已省略的可选章节', '', ...omitted.map(row => `- ${row.title}：${row.omissionReason || '未取得适合正文的证据'}`), '')
@@ -173,8 +214,8 @@ export function validateDraft(draft, evidence, outline, plan = {}) {
         issues.push(`${item.key} 有无正文或无来源段落`); continue
       }
       // Exclude only an explicitly negated claim token; positive claims elsewhere still fail.
-      const candidateClaims = text.replace(/(?:不能|不得|不应|不可)(?:作为|视为|表述为|写成|宣称为)(?:(?:本产品|我司|客户)?(?:现已|已经|已)(?:实现|上线|交付|获得)|保证|承诺)/gu, '')
-      if (candidate && /(?:本产品|我司|客户)(?:已|现已|已经)|已实现|已上线|已交付|已获得|保证|承诺/iu.test(candidateClaims)) {
+      const candidateClaims = affirmativeClaims(text)
+      if (candidate && /(?:本产品|我司|客户)(?:已|现已|已经)|(?:已|已经|现已)(?:具备|实现|上线|交付|获得|拥有)|保证|承诺/iu.test(candidateClaims)) {
         issues.push(`${item.key} 的待确认内容写成了已发生事实`); continue
       }
       const checked = refs.map(ref => {
@@ -201,7 +242,14 @@ export function validateDraft(draft, evidence, outline, plan = {}) {
         const validIds = new Set((plan[collection] || []).map(entry => entry.id))
         planRefs[field] = [...new Set((Array.isArray(block.planRefs?.[field]) ? block.planRefs[field] : []).filter(id => validIds.has(id)))]
       }
-      const boundary = PANORAMA_ROLES.includes(node.roleId) ? capabilityBoundary(block, planRefs, plan, candidate) : null
+      const citedCapabilities = (plan.capabilities || []).filter(entry => planRefs.capabilityIds.includes(entry.id))
+      const verifiedExisting = citedCapabilities.length > 0 && citedCapabilities.every(entry => entry.supportMode === 'sourced' && entry.capabilityStatus === 'existing')
+      if (candidate && !verifiedExisting && (certainCapabilityClaim.test(candidateClaims) || existingCapabilityClaim.test(candidateClaims)
+        || assertedProductAbility(candidateClaims))) {
+        issues.push(`${item.key} 的待确认能力写成了已有或自有能力`); continue
+      }
+      const boundary = PANORAMA_ROLES.includes(node.roleId) || planRefs.capabilityIds.length
+        ? capabilityBoundary(block, planRefs, plan, candidate) : null
       if (boundary?.error) { issues.push(`${item.key}：${boundary.error}`); continue }
       if (boundary?.mixed) reviewItems.push(`${item.key} 同段涉及不同能力状态或归属，整体标签保留未知，请逐项核对正文边界`)
       ids.add(blockId)

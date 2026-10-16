@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { planOutline, confirmOutline, confirmedPlan } from '../src/planning.js'
@@ -35,6 +36,28 @@ const planningModel = model(prompt => prompt.stage === 'extract' ? { facts: prom
       evidence: [{ id: prompt.evidence[0].id, quote: '产品支持统一线索记录' }] }],
     chapterGuidance: [{ key: 'service', focus: '解释销售与客服交接', retrievalQueries: ['销售与客服如何确认交接'] }] })
 
+test('规划必须有当次知识库命中；本地材料无法单独换取可确认 planId', async () => {
+  const f = await setup()
+  const sourceId = randomUUID()
+  const root = path.join(f.cwd, 'artifacts/material-knowledge-assembly/runs')
+  const sourceDir = path.join(root, sourceId)
+  await mkdir(path.join(sourceDir, 'materials'), { recursive: true })
+  await writeFile(path.join(sourceDir, 'run.json'), JSON.stringify({ projectId: 'P', files: [
+    { name: 'local.md', status: 'converted', materialPath: 'materials/local.md' },
+  ] }))
+  await writeFile(path.join(sourceDir, 'materials/local.md'), content)
+  f.client.search = async () => []
+  await assert.rejects(planOutline({ ...f, llm: model(() => assert.fail('零命中不应调用模型')), args: {
+    project_id: 'P', source_run_id: sourceId, outline: [{ key: 'service', title: '协作服务', roleId: 'delivery-service' }],
+  } }), /知识库检索零命中/u)
+  const planRuns = (await readdir(root)).filter(id => id !== sourceId)
+  assert.equal(planRuns.length, 1)
+  const state = JSON.parse(await readFile(path.join(root, planRuns[0], 'run.json'), 'utf8'))
+  assert.equal(state.status, 'failed')
+  assert.equal(state.knowledgeHits, 0)
+  await assert.rejects(readFile(path.join(root, planRuns[0], 'outline-plan.json')), /ENOENT/u)
+})
+
 test('规划宏观取材并绑定身份目标，明确确认版本后才能生成；篡改、目录变化和跨项目均拒绝', async () => {
   const f = await setup(), prompts = []
   const args = { project_id: 'P', author_identity: '营销顾问', domain: '企业营销', objective: '说明线索协作', audience: '营销负责人',
@@ -54,6 +77,7 @@ test('规划宏观取材并绑定身份目标，明确确认版本后才能生�
   await assert.rejects(assemble({ ...f, llm, args: {} }), /先调用/u)
   const preview = await planOutline({ ...f, llm, args })
   assert.equal(preview.status, 'awaiting_confirmation')
+  assert.equal(preview.knowledgeHits, 1)
   const selected = { plan_id: preview.planId, plan_sha256: preview.planSha256 }
   await assert.rejects(confirmedPlan({ args: selected, exec: f.exec }), /尚未确认/u)
   await assert.rejects(confirmOutline({ args: { ...selected, confirmed: false }, exec: f.exec }), /明确确认/u)
@@ -230,7 +254,7 @@ test('长章节证据不重复喂给撰写：尾部事实进入成稿，超限�
   })
   const result = await generateChapters({ llm, exec: f.exec, args: {}, rules, outline, evidence: sources, dir, state, saveState: async () => {},
     acceptedPlan: normalizePlan({}, sources, outline) })
-  assert.ok(forcedSplit)
+  assert.ok(forcedSplit, `写作事实批规模：${seen.filter(prompt => prompt.stage === 'write').map(prompt => prompt.extraction.facts.length).join(',')}`)
   const extract = seen.filter(prompt => prompt.stage === 'extract')
   assert.ok(extract.length > 1)
   assert.ok(extract.some(prompt => prompt.evidence.some(source => source.content.includes(tail))))

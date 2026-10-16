@@ -31,7 +31,7 @@ test('关系按相关章节合批且完整保留每个正文、重点关系与�
   const focuses = relationships.flatMap(job => job.relationships.map(row => row.focusId))
   assert.equal(new Set(focuses).size, 36)
   assert.ok(relationships.length < 36, '不能继续每个重点段落单独调用')
-  assert.ok(relationships.every(job => job.index.length <= 8 && job.blocks.length <= 9))
+  assert.ok(relationships.every(job => job.index.length <= 8 && job.blocks.length <= 12))
   for (const job of relationships) for (const row of job.relationships) {
     assert.ok(job.blocks.some(block => block.id === row.focusId))
     assert.ok(row.targetIds.every(id => job.blocks.some(block => block.id === id)))
@@ -40,6 +40,31 @@ test('关系按相关章节合批且完整保留每个正文、重点关系与�
   const grouped = reviewGroups(sections.map(section => ({ ...section, blocks: section.blocks.map(block => ({ ...block, planRefs: { capabilityIds: ['shared'] } })) })), outline)
   const problem = grouped.flatMap(job => job.relationships).filter(row => row.focusId === 'problems-1')
   assert.equal(new Set(problem.flatMap(row => row.targetIds)).size, 12)
+})
+
+test('三章二十四段与十条主线合为有界复核批，正文和显式对应均不丢失', () => {
+  const threeChapters = [
+    { key: 'business', roleId: 'business-architecture', count: 9 },
+    { key: 'product', roleId: 'product-architecture', count: 5 },
+    { key: 'scenes', roleId: 'scenario-solution', count: 10 },
+  ]
+  const sections = threeChapters.map(chapter => ({ key: chapter.key,
+    blocks: Array.from({ length: chapter.count }, (_, i) => ({ id: `${chapter.key}-${i + 1}`,
+      text: `【待确认·典型场景假设】线索协作场景 ${i + 1} 需核对问题、产品能力与落地条件。`.repeat(4),
+      planRefs: { capabilityIds: [`cap-${i % 5}`] }, evidence: [], supportMode: 'candidate' })) }))
+  const jobs = reviewGroups(sections, threeChapters)
+  assert.ok(jobs.length <= 9, `预期至多九次复核请求，实际 ${jobs.length} 次`)
+  assert.deepEqual(new Set(jobs.filter(job => job.kind === 'chapter').flatMap(job => job.blocks.map(block => block.id))),
+    new Set(sections.flatMap(section => section.blocks.map(block => block.id))))
+  assert.deepEqual(new Set(jobs.flatMap(job => job.relationships.map(row => row.focusId))),
+    new Set(sections[2].blocks.map(block => block.id)))
+  for (const job of jobs.filter(row => row.kind === 'relationship')) {
+    assert.ok(job.blocks.length <= 12 && JSON.stringify(job.blocks).length <= 15000)
+    for (const relation of job.relationships) {
+      assert.ok(relation.targetIds.length > 0)
+      assert.ok(relation.targetIds.every(id => job.blocks.some(block => block.id === id)))
+    }
+  }
 })
 
 test('相同指纹复用已完成复核；改动只重查受影响段落和关系，规则变化使旧结果失效', async () => {
