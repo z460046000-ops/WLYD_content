@@ -9,7 +9,7 @@ import { atomicJson, readJson, reserveRun, claimRun, processAlive } from './pers
 import { resolveWritingModel } from './model.js'
 import { qualityMode } from './fact-cards.js'
 
-export const ACTIVE_STATUSES = new Set(['admission_pending', 'queued', 'collecting_evidence', 'generating', 'enriching_panoramas', 'reviewing', 'cancelling'])
+export const ACTIVE_STATUSES = new Set(['admission_pending', 'queued', 'collecting_evidence', 'generating', 'draft_building', 'draft_reviewing', 'enriching_panoramas', 'reviewing', 'cancelling'])
 export function materialFingerprint(source) {
   return sha256(JSON.stringify(source.evidence.map(row => [row.id, sha256(row.content)])))
 }
@@ -31,7 +31,9 @@ export function observedTask(state) {
   const interrupted = ACTIVE_STATUSES.has(state.status) && (admissionExpired
     || state.worker && (state.worker.active === false || !processAlive(state.worker)))
   return { ...state, ...(interrupted ? { status: 'interrupted', storedStatus: state.status,
-    recoveryNote: '原执行进程已退出；已保存检查点，可用 generate mode=resume 接续' } : {}), progress: taskProgress(state) }
+    recoveryNote: '原执行进程已退出；已保存检查点，可用 generate mode=resume 接续' } : {}),
+    ...(state.reportReady && ACTIVE_STATUSES.has(state.status) ? { nextAction: interrupted
+      ? '可先阅读已交初稿；用 generate mode=resume 接续中断任务' : '可先阅读已交初稿；后台任务仍在运行，用 status 查看进度，不重复 generate' } : {}), progress: taskProgress(state) }
 }
 
 /** Host jobs own cancellation; disk checkpoints own restart recovery. No unowned jobs. */
@@ -48,9 +50,9 @@ export function createTaskService({ jobs, client, llm, execute = assemble, persi
   }
   const query = async (runId, exec) => observe(await status({ client, runId, agent: exec.agent, signal: exec.signal }), exec)
   const summary = state => ({ runId: state.runId, run_id: state.runId, status: state.status, jobId: state.jobId || null,
-    progress: taskProgress(state), ...(state.reportPath ? { reportPath: state.reportPath, jsonPath: state.jsonPath,
+    progress: taskProgress(state), reportReady: Boolean(state.reportReady), ...(state.reportPath ? { reportPath: state.reportPath, jsonPath: state.jsonPath,
       reviewPath: state.reviewPath, reviewJsonPath: state.reviewJsonPath } : {}),
-    nextAction: ACTIVE_STATUSES.has(state.status) ? '调用 status 查询进度，不重复 generate'
+    nextAction: ACTIVE_STATUSES.has(state.status) ? state.reportReady ? '可先阅读已交初稿；后台任务仍在运行，用 status 查看进度，不重复 generate' : '调用 status 查询进度，不重复 generate'
       : ['partial_draft', 'failed', 'cancelled', 'interrupted'].includes(state.status) ? 'generate mode=resume 只接续未完成部分' : '查看产物与待审项' })
   const submit = async (args, exec) => {
     if (closing) throw new Error('插件正在停止，暂不接收新任务')

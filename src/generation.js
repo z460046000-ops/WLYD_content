@@ -162,14 +162,17 @@ function validateBodyBlock(block, facts, rule, supplied) {
 }
 
 /** All chapter pipelines are submitted together; shared model slots still bound actual requests. */
-export async function generateChapters({ llm, exec, args, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan, resume = false }) {
+export async function generateChapters({ llm, exec, args, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan, resume = false, onDraft }) {
   if (!acceptedPlan) throw new Error('缺少已确认大纲，不能在正文生成中重新规划')
   if (!retrieval) {
     retrieval = createRetrieval({ evidence, dir, signal: exec.signal, rules, outline, audience: args.audience })
     await retrieval.prepare()
   }
   if (['draft', 'standard'].includes(args.quality_mode)) {
-    const draft = await generateFastDraft({ llm, exec, args, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan, resume })
+    const draft = await generateFastDraft({ llm, exec, args, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan, resume,
+      onDraft: onDraft && ((snapshot, phase) => onDraft({ ...snapshot,
+        assemblyLinks: linksFromPlan(acceptedPlan, snapshot.sections, outline),
+        contentBalance: contentBalance(snapshot.sections, outline, rules.global.contentBalance) }, phase)) })
     return { ...draft, assemblyLinks: linksFromPlan(acceptedPlan, draft.sections, outline),
       contentBalance: contentBalance(draft.sections, outline, rules.global.contentBalance) }
   }

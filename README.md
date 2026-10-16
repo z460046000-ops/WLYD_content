@@ -2,9 +2,9 @@
 
 独立 DSH/Cordis 插件：导入材料、同步项目知识库，按规则生成可审阅的解决方案正文。当前输出 Markdown/JSON；HTML 编辑、架构图绘制、PPTX/PDF 导出尚未实现，不依赖旧插件或 HTML Anything。
 
-**当前源码和3081测试安装版为 0.8.0：默认快速初稿＋章节迭代。知识库取材和大纲确认仍是必经步骤，初稿问题改为可见标注，支持按章评论、追问、修改与定稿。** 上一版 0.7.0 已在本机 [3081 测试环境](http://127.0.0.1:3081/) 用 CallWan 知识库完成三章真实组稿，得到 `partial_draft`；0.8.0 已安装并完整重启，真实模型质量与耗时待测试；浏览器工具受策略限制，页面版本未核对。本轮未更新日常 3080。安装状态、验证边界见 [测试记录](docs/test-record.md)，后续任务见 [待办](docs/backlog.md)。
+**当前源码为 0.9.0：合并规划、合并章内提写、精简查询、初稿先交后复核。知识库取材、大纲确认和前后关联检查继续保留。** 本轮按用户要求只交付代码和安装包，**没有安装或重启 DSH**。3081 上次安装记录为 0.8.0；0.9.0 的真实模型质量与耗时尚未实测。安装状态、验证边界见 [测试记录](docs/test-record.md)，后续任务见 [待办](docs/backlog.md)。
 
-全局规则已更新到 **0.10.0**，旧 `planId` 的规则指纹不再匹配：升级 0.8.0 后重新 `plan → confirm → generate`，可以复用原导入材料，不必重复上传。
+全局规则已更新到 **0.11.0**，旧 `planId` 的规则指纹不再匹配：以后安装 0.9.0 后重新 `plan → confirm → generate`，可以复用原导入材料，不必重复上传。
 
 ## 1. 项目、规则和插件在哪里
 
@@ -16,8 +16,8 @@
 | Cordis 组件 / 工具前缀 | `wlyd-material-knowledge-assembly` / `wlyd_assembly_*` |
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 日常安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
-| 本机测试环境 | `http://127.0.0.1:3081/`，profile 为 `wlyd-assembly-021-browser`（历史名称）；已安装并完整重启0.8.0，页面待人工确认 |
-| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.8.0.tgz`；SHA-256 见 `releases/SHA256SUMS` |
+| 本机测试环境 | `http://127.0.0.1:3081/`，profile 为 `wlyd-assembly-021-browser`（历史名称）；上次安装0.8.0，本轮未更改 |
+| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.9.0.tgz`；SHA-256 见 `releases/SHA256SUMS`，尚未安装 |
 | 历史安装包 / 校验 | `releases/` / `releases/SHA256SUMS` |
 | 运行产物 | **当前 DSH 会话工作区**的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
 
@@ -40,7 +40,8 @@ src/
 ├── facts.js         分批提取事实卡，按输入超限与有效输出耗尽分类处理
 ├── evidence-policy.js 事实主体、用途、假设身份和章节适配规则
 ├── generation.js    按质量模式路由；保留 strict 分批撰写和校验
-├── draft-generation.js 快速初稿：各章取证、事实卡、一次撰写、单轮检查
+├── draft-generation.js 快速初稿：各章取证、合并提写、逐章交稿、单轮检查
+├── combined-writing.js 原文卡分批、同次生成事实与正文、补来源和中断恢复
 ├── fact-cards.js    稳定事实卡编号、程序补引文、未验证标注与待补卡
 ├── chapters.js      章节评论、追问、范围修改、版本、定稿与关联复查
 ├── panorama.js      小范围单轮全景补充，保留原稿
@@ -51,7 +52,7 @@ src/
 ├── rules.js         加载模板、章节角色与规则指纹
 └── schema.js        DSH 工具标准 JSON Schema
 rules/
-├── global.json      所有方案共用的取材、关联及阶段任务规则（0.10.0）
+├── global.json      所有方案共用的取材、关联及阶段任务规则（0.11.0）
 ├── style.json       短标题、短语概括、短句说明等共用写法
 ├── templates/       各方案类型的默认目录，目前提供 presales-solution
 └── chapters/        按角色定义 extractQuestions / write / validate / missing
@@ -59,16 +60,18 @@ rules/
 
 模板定义目录，章节角色定义取材和写法，全局规则定义共同纪律；产品事实来自用户材料和授权知识库。goodcase 只学习方法，不作为本次客户、产品能力、数字或奖项证据。`extractQuestions` 是重点线索，不是白名单。全景规则的学习依据见 [全景学习记录](docs/panorama-rule-evidence.md)。
 
-### 0.8.0 快速初稿与章节迭代
+### 0.9.0 减少模型往返，先交初稿
 
 - **先从知识库取材，再展示粗大纲等用户确认。** 没有当前授权项目知识库的真实命中就不创建 `planId`；本地材料不能冒充知识库命中。每章记录当次查询和命中，规划锚点单列。
-- **默认 `quality_mode=draft`**：各章完成取证和事实卡后一次撰写；不自动补查、追加全景、修正或复查成环。合稿五项关联检查跑一轮，检查失败或未通过不丢正文。它仍可能有多次事实提取与多个有界检查组，不是整篇一次模型调用。
-- **模型只返回 `factIds`，程序补引文。** 引文来自已核验事实卡，不要求撰写模型再次抄写。未知编号和不合格表述保留为 `【未验证】`，移除不合法引用；引文可定位不代表语义正确。
+- **规划一次完成**：最多四条宏观片段、每条最多1800字符，同次归纳少量事实、粗目录和主线；完整召回原文另存。未返回有效宏观事实时显式保留原文锚点和待审提示，不增加提取调用。
+- **默认 `quality_mode=draft`**：每章先查一条，成功但为空或原文明显过少时最多补一条不同查询；失败不扩查。模型同次归纳事实与写正文，短章通常一批，长章按原文窗口处理；不自动追加全景或修正成环。standard 最多修正一次，strict 保留原流程。
+- **程序补引文。** 输入原文卡用 `s-*` 编号，模型返回简短事实和正文 `factIds`，程序核对卡与来源、生成兼容 `f-*` 事实卡并补引文。未知编号和不合格表述保留为 `【未验证】`，移除不合法引用；来源定位不代表语义正确。
+- **先读初稿，复核继续**：完成一章就刷新 `report.md`，全章产出后标 `reportReady=true`、`draft_reviewing`，同一宿主任务继续一轮五项关联检查。`firstChapterReadyAt`、`draftReadyAt`、`reviewFinishedAt` 分别计时；有待补卡不代表完整正文。复核中的 `chapter action=list` 可读，修改/定稿须等待结束或取消后，防止旧检查覆盖新稿。
 - **每章有可见产物。** 正文状态 `draft_unverified`；缺事实或未返回正文时为 `needs_input`，显示原因、具体追问和下一步。正文被截断时保留已完整返回的段落；不会把待补卡说成完整正文。
 - **按章修改。** `wlyd_assembly_chapter` 支持评论、追问、解决、修改、定稿和解锁。修改复用该章事实卡与来源，不重新提取全篇；保留版本，其他章节正文、引用和状态不变，合稿按指纹复用未变化的检查。
 - **保留三档。** draft 不自动修正；standard 最多修正一次，仍有问题则标注保留；strict 维持原严格生成、过滤和有界修正路径。三种模式都要求已确认大纲。相同规划的不同模式使用不同运行记录。
 
-初稿单次模型请求执行窗口为三分钟，排队仍受全局/路由额度约束。这里没有新增统一硬编码输出 token 上限：思考 token 可能占用输出预算，不能靠小预算保证成功。`WLYD_ASSEMBLY_OUTPUT_BUDGETS` 仍可显式配置。附件的十分钟出稿、单章六十秒是待实测目标；模型/网关不可用、磁盘错误或取消时无法保证正文产出。
+初稿原文每窗最多2400字符、重叠160字符，每批正文最多8000字符；覆盖选材尾部，不把全集塞进一次请求。续写只带最近八段的短摘要，复核原文按来源去重，避免每段重复整窗引文。单次模型请求执行窗口三分钟，排队另计；不是全流程时限。未新增统一输出token上限，`WLYD_ASSEMBLY_OUTPUT_BUDGETS` 可显式配置。实际提速仍待用户测试，模型/网关不可用、磁盘错误或取消时无法保证正文产出。
 
 ### 0.7.0 提示词组织
 
@@ -96,9 +99,9 @@ flowchart TD
     B --> C[粗目录与关联主线，展示给用户]
     C --> D[用户确认后固定 planId 和 SHA]
     D --> E[generate 默认 draft，返回 runId]
-    E --> F[各章并行：本章检索→事实卡→一次撰写]
+    E --> F[各章并行：本章检索→同次归纳事实和撰写]
     F --> G[程序补引用，问题标注，缺材料给追问卡]
-    G --> H[单轮合稿关联检查，保存可编辑初稿]
+    G --> H[逐章刷新初稿，宿主任务继续关联复核]
     H --> I[逐章评论/追问→修改→用户定稿]
     I --> J[只复查受影响关联，随时查看最新 report.md]
 ```
@@ -106,7 +109,7 @@ flowchart TD
 ### 轻量规划和确认
 
 - 作者身份与读者分开：`author_identity` 如营销顾问、人力资源顾问；`domain` 为领域，`objective` 为目标，`audience` 为读者。
-- 规划只选最多四条代表性证据，长证据先分批提取；粗大纲每章一句目的和简短检索方向，提示模型只挑最多三条主线，不穷举全部功能或设计详细全景。
+- 规划只选最多四条代表性证据的开头选段，同次归纳宏观事实与粗大纲，每章一句目的和简短检索方向，提示模型只挑最多三条主线；完整知识原文另存，不宣称规划读完全文。
 - `outline action=plan` 先检查真实知识库命中，再保存 `outline-plan.json`，返回 `planId`、`planSha256`、命中数、粗目录、候选主线和复核项。没有项目授权、解析完成的文档或有效命中就失败，不自动用本地材料代替。
 - 展示目录与主线，收到用户明确确认后才调用 `action=confirm`。程序校验版本和规则哈希；**用户确认意图由 DSH 对话负责，布尔字段不是独立身份审批证明**。
 - `generate` 必须带已确认的 `plan_id` 与 `plan_sha256`。项目、材料运行、目录、写作身份、目标、读者或规则版本不一致时要求重新规划确认。正文不再调用详细全局规划。
@@ -248,16 +251,16 @@ artifacts/material-knowledge-assembly/runs/<runId>/
 
 ## 5. 安装与配置
 
-Node.js 22+、DSH 和内容中台账号为前提。0.8.0 测试包按以下命令安装到独立测试 profile：
+Node.js 22+、DSH 和内容中台账号为前提。0.9.0 包已准备，**本轮未执行安装或重启**；用户确认切换时，可按以下命令安装到独立测试 profile：
 
 ```bash
-shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.8.0.tgz
-dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.8.0.tgz"
+shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.9.0.tgz
+dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.9.0.tgz"
 ```
 
 校验值以 `releases/SHA256SUMS` 为准。这份包的文档是打包时快照；发布后补记的安装结果以仓库当前 README 和测试记录为准。若修改源码或文档，应升新版本再打包，避免同名包产生不同哈希。
 
-更换插件版本后完整重启对应 DSH 并刷新页面，再核对插件版本与组件“运行中”；包版本更新不代表旧进程中的工具定义已刷新。0.7.0 的真实三章报告为 `partial_draft`；0.8.0 的安装与真实成稿验证见 [测试记录](docs/test-record.md)。
+以后切换版本时再按用户指令完整重启对应 DSH，刷新页面并核对工具运行版本；本次源码和包更新不改变现有进程。历史安装与真实成稿验证见 [测试记录](docs/test-record.md)。
 
 配置优先级：插件 config → 环境变量 → `$DSH_HOME/.env`。
 
@@ -284,8 +287,8 @@ dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-mater
 
 ## 6. 仍未打通与验收边界
 
-- 本版新增的是本机任务去重、检查点与显式恢复；DSH 退出不会继续后台生成。没有云端队列、远程调度、任意成功章重写或跨设备自动接续。旧版任务没有新版检查点时需重新规划启动。
-- 0.7.0 已做一次真实三章组稿且仅产出部分草稿；0.8.0 的真实成稿质量、token 与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、安装与自动化结果见测试记录。
+- 本版新增的是本机任务去重、检查点与显式恢复；DSH 退出不会继续后台生成。没有云端队列、远程调度或跨设备自动接续；成功章已可通过 chapter action=revise 定向修改。旧版任务没有新版检查点时需重新规划启动。
+- 0.7.0已做一次真实三章组稿且仅产出部分草稿；本轮0.9.0未安装，真实成稿质量、token与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、历史安装与自动化结果见测试记录。
 - 知识库关联候选和本地词面选段可能漏材料；原文回读、Wiki/图谱和公开检索未接，缺少来源的政策不能冒充检索结果。
 - UTF-8 文本、Markdown、DOCX、文字 PDF、PPTX、XLSX、ZIP 支持文字提取；不保证图表、图片文字、版式完整。图片/扫描件 OCR、DMG、旧 Office、音视频、链接抓取未接。
 - 单批 100 文件、单文件 500 MB；ZIP 最多 1000 项/共 1 GB。入口限额不证明任意格式 500 MB 全链路可用，真实大文件链路待验收。

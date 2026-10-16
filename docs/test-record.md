@@ -1,5 +1,43 @@
 # 测试记录
 
+## 2026-10-16：0.9.0 前四项提速，未安装或重启
+
+用户确认实施：章内提取/撰写合并、逐章先交初稿再后台关联复核、宏观提取/规划合并、章节主查询一条且成功不足才补一条。知识库真实取材、用户确认大纲、引用和前后关联检查继续保留。全局规则0.11.0，之后切换安装时须重新plan/confirm，导入材料可复用。
+
+### 已运行验证
+
+- DSH同版本Node.js 22.22.2：26个源码模块语法检查通过；全套187/187通过，0失败、0取消、0跳过。全部使用模拟后端和模型，不代表真实生成耗时。
+- 规划：真实KB零命中不可创建规划；宏观来源归纳与大纲仅一次plan调用；只核对实际送入选段，完整原文归档；确认/SHA/权限/规则变化继续拦截。
+- 提写：draft无独立extract调用；原文卡映射事实卡并补真实引用；长原文尾部覆盖、续写上下文有界；空批保留其他批次正文，中断只恢复sections正文；错误编号不伪造来源，企业/案例无正向事实给材料卡；standard最多修一次。
+- 交稿与复核：gate刻意阻塞后续章/复核，验证首章可读且未完成章为pending、全章产物可读时job/claim仍活跃；重复submit复用同运行、仅list放行；取消保稿并释放锁，resume复用正文与版本。
+- 复核：五项检查、全段和跨章显式关系均保留。六段重复引用同一2400字符窗口的固定样本由2组变1组；不同长窗仍按去重原文计费分组。只对快稿首通投影，strict和改单章保持原提示词。
+- 兼容：原strict流水线、授权/材料摘要、章节评论/修改/定稿、版本冲突、取消/恢复和零正文失败口径继续回归。
+
+### 文件及原因
+
+| 文件 | 原因 |
+|---|---|
+| src/planning.js | 宏观事实和粗大纲同次生成，有限选段与原文锚点降级 |
+| src/retrieval.js | fast主查询一条、成功不足最多补一条，失败不扩查 |
+| src/combined-writing.js（新增） | 原文窗口卡、同次事实/正文映射、用途筛选及截断恢复 |
+| src/draft-generation.js、src/generation.js | 接入合并提写，逐章发布快照，兼容事实卡和单章迭代 |
+| src/workflow.js、src/tasks.js | 报告先落盘再公开，活跃任务继续托管复核，取消保稿 |
+| src/content.js、src/chapters.js | pending/复核中措辞、可读与可修改状态隔离 |
+| src/review.js、src/context.js | 重复整窗引文按来源去重、精确位置投影、来源输入指标 |
+| rules/global.json、package.json、package-lock.json | 流程规则0.11.0、包0.9.0、26模块检查 |
+| test/combined-writing、early-draft、retrieval-fast、review-projection.test.mjs（新增）及受影响测试 | 验证合并/引用/交稿/互斥/取消恢复/有限查询/复核覆盖和兼容 |
+| README.md、docs/architecture.md、docs/backlog.md、docs/fast-generation-plan-20261016.md、memory.md | 同步产品架构、已做和待测、交付与安装边界 |
+
+### 未验证与人工确认
+
+本轮未调用真实模型/后端，未测实际分钟数、召回覆盖和成稿业务质量。未安装插件、未重启3081或3080，源代码完成不表示现有DSH已生效。跨运行缓存、多来源FAQ、原文回读、改单章补检索和HTML美化未纳入本轮。
+
+用户之后指定切换时，再加载0.9.0、重新plan→用户确认→generate，用status读取reportPath并分别记录firstChapterReadyAt/draftReadyAt/reviewFinishedAt；人工核对业务问题→场景方案→能力→趋势及材料卡。安装包SHA-256以releases/SHA256SUMS为准，包内文档是打包时快照。
+
+交付补记：`releases/wlyd-dsh-material-knowledge-assembly-0.9.0.tgz`，198302字节、52个白名单文件；SHA-256 `a458e7356baa18b335207ae42a4514dc850c85fa75879522017f063d16b7b8ea`。包内文件在打包后与工作区逐字节核对通过，包含新模块/规则/方案文档，无测试、原料、运行记录和凭证；此补记及项目记忆的包信息在打包后追加，没有覆盖重打同名包。未安装或重启。
+
+文档检查：本轮修改的五份入口/方案文档本地链接通过；扫描历史文档发现`chapter-retrieval-plan-20261015.md`中两条Downloads附件路径已不存在，属于历史来源引用，本轮未修改。差异空白检查通过。
+
 ## 2026-10-16：0.8.0 打包、安装与重启
 
 - 安装包 `releases/wlyd-dsh-material-knowledge-assembly-0.8.0.tgz`，180134字节、50个白名单文件；SHA-256 `d8852ecfc2d7198f69c0d57455fe98a4a20949aec02dd03ef8f222292b876c54`，已登记 `releases/SHA256SUMS`。包内包含三个新模块，无原料、测试、凭证、`.tmp-extract/`及未跟踪的写作规范资料。

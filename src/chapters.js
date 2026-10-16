@@ -13,7 +13,7 @@ import { reviewAssembly } from './review.js'
 import { routeFacts } from './evidence-policy.js'
 import { linksFromPlan } from './generation.js'
 
-const TERMINAL = new Set(['draft_ready', 'needs_human_review', 'partial_draft', 'failed'])
+const TERMINAL = new Set(['draft_ready', 'needs_human_review', 'partial_draft', 'failed', 'cancelled'])
 const summary = (report, node) => {
   const record = report.chapterRecords?.[node.key] || {}
   const outcome = report.chapterOutcomes.find(row => row.key === node.key) || {}
@@ -35,11 +35,12 @@ export async function chapterAction({ client, llm, args, exec }) {
   const dir = runPath(exec.agent, args.run_id)
   let state = await readJson(path.join(dir, 'run.json'))
   if (state.actorDshId && state.actorDshId !== exec.agent.session?.user?.id) throw new Error('当前用户无权修改此稿件')
-  if (!TERMINAL.has(state.status)) throw new Error('请等待生成结束，再操作章节')
+  const action = args.action || 'list'
+  if (!TERMINAL.has(state.status) && !(action === 'list' && state.reportReady)) throw new Error('初稿仍在生成或复核，请等待任务结束或取消后再修改章节')
   let report = await readJson(path.join(dir, 'report.json'))
   const nodes = flattenOutline(report.outline)
-  const action = args.action || 'list'
   if (action === 'list') return { runId: args.run_id, qualityMode: report.qualityMode || 'strict',
+    status: state.status, reportReady: Boolean(state.reportReady),
     chapters: nodes.map(node => summary(report, node)), reportPath: path.join(dir, 'report.md') }
   const node = nodes.find(row => row.key === args.chapter_key)
   if (!node) throw new Error('chapter_key 不在本稿件目录中，请先 action=list')

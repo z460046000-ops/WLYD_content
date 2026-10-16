@@ -4,9 +4,9 @@ import { assemble } from '../src/workflow.js'
 export async function confirmedArgs(client, args, exec) {
   const llm = { async *stream(request) {
     const prompt = JSON.parse(request.messages[0].content[0].text)
-    const value = prompt.stage === 'extract' ? { facts: prompt.evidence.map(source => ({ text: source.content.slice(0, 160),
-      evidence: [{ id: source.id, quote: source.content.slice(0, 80) }] })) }
-      : { title: '测试方案', businessMode: { value: args.business_mode || 'needs-challenges' }, trendFramework: { value: args.trend_framework || 'management-business-technology' } }
+    const value = { facts: prompt.evidence.map(source => ({ text: source.content.slice(0, 160),
+      evidence: [{ id: source.id, quote: source.content.slice(0, 80) }] })),
+      title: '测试方案', businessMode: { value: args.business_mode || 'needs-challenges' }, trendFramework: { value: args.trend_framework || 'management-business-technology' } }
     yield { type: 'text-delta', text: JSON.stringify(value) }
     yield { type: 'finish', reason: { kind: 'stop' } }
   } }

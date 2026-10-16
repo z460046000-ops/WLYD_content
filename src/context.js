@@ -22,14 +22,17 @@ export async function createRequester({ llm, exec, state, saveState }) {
   return async prompt => {
     const input = JSON.stringify(prompt)
     const supplied = list(prompt.evidence)
+    const sourceCards = prompt.generationMode === 'retrieve-write' ? list(prompt.facts) : []
     const record = { stage: prompt.stage, ...(prompt.chapter?.key ? { chapterKey: prompt.chapter.key } : {}),
       ...(prompt.reviewScope ? { reviewScope: prompt.reviewScope } : {}),
       ...(prompt.retrievalRound ? { retrievalRound: prompt.retrievalRound } : {}),
       ...(prompt.batchId ? { batchId: prompt.batchId } : {}),
       inputCharacters: input.length, inputBytes: Buffer.byteLength(input), inputCharacterUnit: 'UTF-16',
-      evidenceCount: supplied.length, evidenceIds: supplied.map(item => item.id),
-      evidenceCharacters: supplied.reduce((n, item) => n + item.content.length, 0),
-      factCardCount: list(prompt.facts || prompt.extraction?.facts).length,
+      evidenceCount: supplied.length || sourceCards.length,
+      evidenceIds: strings([...supplied.map(item => item.id), ...sourceCards.map(item => item.sourceEvidenceId)]),
+      evidenceCharacters: supplied.reduce((n, item) => n + item.content.length, 0) + sourceCards.reduce((n, item) => n + item.text.length, 0),
+      factCardCount: sourceCards.length ? 0 : list(prompt.facts || prompt.extraction?.facts).length,
+      ...(sourceCards.length ? { generationMode: prompt.generationMode, sourceCardCount: sourceCards.length } : {}),
       ...(prompt.qualityMode ? { qualityMode: prompt.qualityMode } : {}),
       ...selection, outputBudgetSource: stageOutputBudget(prompt.stage, selection) === undefined ? 'adapter-default' : 'plugin-config',
       resumeAttempt: state.resumeCount || 0, startedAt: new Date().toISOString(), status: 'pending' }

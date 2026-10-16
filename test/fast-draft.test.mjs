@@ -14,26 +14,25 @@ const outline = [
   { key: 'platform', title: '技术支撑', roleId: 'technical-platform', required: true },
   { key: 'company', title: '企业介绍', roleId: 'company-profile', required: true },
 ]
-function fakeModel({ invalid = false, extractFail = false, writeFail = false } = {}) {
+function fakeModel({ invalid = false, writeFail = false, emptyWriteAt } = {}) {
   const calls = []
   return { calls, resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low' }] } }),
     async *stream(request) {
       const prompt = JSON.parse(request.messages[0].content[0].text)
       calls.push(prompt)
       let value
-      if (prompt.stage === 'extract') {
-        if (extractFail) throw new Error('提取服务不可用')
-        value = { facts: prompt.evidence.map(source => ({ text: source.content, subject: 'product', purpose: 'capability',
-          evidence: [{ id: source.id, quote: source.content }] })) }
-      } else if (prompt.stage === 'write') {
+      if (prompt.stage === 'write') {
         if (writeFail) {
           yield { type: 'text-delta', text: '{"sections":[{"blocks":[{"text":"可考虑通过统一记录核对交接责任。"},' }
           yield { type: 'finish', reason: { kind: 'max-tokens' } }
           return
         }
-        value = { sections: [{ key: prompt.chapter.key, blocks: [{
+        value = calls.filter(call => call.stage === 'write').length === emptyWriteAt ? null : { ...(prompt.generationMode === 'retrieve-write' ? { facts: [{ id: 'claim-1', text: '产品提供统一记录能力',
+          sourceCardIds: [prompt.facts[0]?.id], subject: 'product', purpose: 'capability', supportMode: 'sourced' }] } : {}),
+          sections: [{ key: prompt.chapter.key, blocks: [{
           text: invalid ? '该能力已经全面交付并提升80%效率。' : prompt.instruction ? '可考虑按用户要求简化交接责任核对。' : '可考虑通过统一记录核对交接责任。',
-          supportMode: invalid ? 'sourced' : 'candidate', factIds: invalid ? ['missing-card'] : [prompt.facts[0]?.id],
+          supportMode: invalid ? 'sourced' : 'candidate', factIds: invalid ? ['missing-card']
+            : [prompt.generationMode === 'retrieve-write' ? 'claim-1' : prompt.facts[0]?.id],
           planRefs: { capabilityIds: [], scenarioIds: [], problemIds: [], trendIds: [] },
         }] }] }
       } else if (prompt.stage === 'consistency-review') {
@@ -76,7 +75,8 @@ test('默认快速初稿每章有产物；错误引用和数字带标注保留�
   assert.deepEqual(report.sections[0].blocks[0].evidence, [])
   assert.ok(report.sections[2].inputNeeded.questions.length)
   assert.equal(report.assemblyReview.passed, false)
-  assert.equal(f.llm.calls.filter(call => call.stage === 'write').length, 2)
+  assert.equal(f.llm.calls.filter(call => call.stage === 'write').length, 3)
+  assert.equal(f.llm.calls.filter(call => call.stage === 'extract').length, 0)
   assert.ok(!f.llm.calls.some(call => ['relationship-repair', 'panorama-enrichment'].includes(call.stage)))
   const text = await readFile(f.result.reportPath, 'utf8')
   assert.match(text, /企业介绍/u); assert.match(text, /待补材料/u); assert.match(text, /未验证/u)
@@ -84,15 +84,16 @@ test('默认快速初稿每章有产物；错误引用和数字带标注保留�
   assert.equal(state.progress.pending, 0); assert.equal(state.progress.needsInput, 1)
 })
 
-test('提取失败不反复修正，使用明确原文选段；写作截断保留完整段并标记未验证', async t => {
-  const f = await draftFixture(t, { outline: [outline[0]] }, { extractFail: true, writeFail: true })
+test('合并提写没有单独提取调用；写作截断保留完整段并标记未验证', async t => {
+  const f = await draftFixture(t, { outline: [outline[0]] }, { writeFail: true })
   const report = await readRecord(f.result.jsonPath)
   assert.equal(report.sections[0].blocks.length, 1)
   assert.match(report.sections[0].blocks[0].text, /【未验证】/u)
-  assert.equal(f.llm.calls.filter(call => call.stage === 'extract').length, 1)
+  assert.equal(f.llm.calls.filter(call => call.stage === 'extract').length, 0)
   assert.equal(f.llm.calls.filter(call => call.stage === 'write').length, 1)
   const extraction = await readRecord(path.join(f.dir, 'chapters/service/extraction.json'))
-  assert.equal(extraction.batches[0].status, 'source_excerpt')
+  assert.equal(extraction.batches[0].status, 'partial')
+  assert.equal(extraction.mode, 'retrieve-write')
 })
 
 test('standard 只修正一次，仍有问题保留带标注初稿', async t => {
@@ -100,6 +101,29 @@ test('standard 只修正一次，仍有问题保留带标注初稿', async t => 
   assert.equal(f.llm.calls.filter(call => call.stage === 'write').length, 2)
   assert.equal(f.result.status, 'draft_ready')
   assert.match((await readRecord(f.result.jsonPath)).sections[0].blocks[0].text, /未验证/u)
+})
+
+test('长原文提写覆盖尾部，续写摘要有界；空响应不抹去其他批次正文，计时记录保留原文输入量', async t => {
+  const f = await taskFixture({ outline: [outline[0]], quality_mode: 'draft' })
+  const content = '业务线索统一维护，销售和客服核对交接责任。'.repeat(6000) + '尾部条件：仍须人工确认交接。'
+  f.client.search = async () => [{ chunk_id: 'LONG', knowledge_id: 'D1', content }]
+  const llm = fakeModel({ emptyWriteAt: 2 }), service = createTaskService({ ...f, llm })
+  t.after(() => service.close())
+  const submitted = await service.submit(f.args, f.exec)
+  assert.equal((await f.jobs.settled(submitted.jobId)).status, 'completed')
+  const state = await service.query(submitted.runId, f.exec), report = await readRecord(state.jsonPath)
+  const writes = llm.calls.filter(call => call.stage === 'write')
+  assert.ok(writes.length > 8)
+  assert.ok(writes.every(call => (call.currentBlocks?.length || 0) <= 8))
+  assert.ok(writes.every(call => call.facts.reduce((sum, card) => sum + card.text.length, 0) <= 8000))
+  assert.ok(writes.some(call => call.facts.some(card => card.text.includes('尾部条件'))))
+  assert.ok(report.sections[0].blocks.length > 1)
+  assert.ok(!llm.calls.some(call => call.stage === 'extract'))
+  const extraction = await readRecord(path.join(runPath(f.agent, submitted.runId), 'chapters/service/extraction.json'))
+  assert.equal(extraction.batches[1].status, 'partial')
+  assert.ok(extraction.reviewItems.some(item => item.includes('第2批未返回')))
+  assert.ok(state.modelRequests.filter(call => call.stage === 'write').every(call => call.generationMode === 'retrieve-write'
+    && call.sourceCardCount > 0 && call.evidenceCharacters > 0 && call.evidenceIds.length > 0))
 })
 
 test('公开生成入口省略质量参数时使用draft；相同规划不同质量模式不共用任务', async t => {
@@ -128,7 +152,7 @@ test('章节评论追问与解决不调用模型；修改只影响指定章，�
   const after = await readRecord(f.result.jsonPath)
   assert.deepEqual(after.sections.filter(row => row.key !== 'service'), before.sections.filter(row => row.key !== 'service'))
   assert.deepEqual(after.chapterOutcomes.filter(row => row.key !== 'service'), before.chapterOutcomes.filter(row => row.key !== 'service'))
-  assert.equal(f.llm.calls.filter(call => call.stage === 'write').length, 3)
+  assert.equal(f.llm.calls.filter(call => call.stage === 'write').length, 4)
   const v1 = await readRecord(path.join(f.dir, 'chapters/service/versions/1.json'))
   assert.deepEqual(v1.section, before.sections[0])
   await assert.rejects(call({ action: 'revise', chapter_key: 'service', expected_version: 1, instruction: '过期修改' }), /版本已改变/u)

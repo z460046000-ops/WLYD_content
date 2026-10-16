@@ -3,23 +3,27 @@ import path from 'node:path'
 import { flattenOutline } from './rules.js'
 import { mapConcurrent, abortError } from './scheduler.js'
 import { createRequester, commonContext, chapterPlan, writeJson, list, strings } from './context.js'
-import { collectFacts } from './facts.js'
-import { routeFacts } from './evidence-policy.js'
-import { factCards, annotateDraft, inputCard, partialProse } from './fact-cards.js'
+import { annotateDraft, inputCard } from './fact-cards.js'
+import { sourceCardBatches, materializeCombined, partialCombinedProse } from './combined-writing.js'
 import { reviewAssembly } from './review.js'
 
-export function draftWritePrompt({ common, node, rule, cards, plan, instruction, blocks }) {
+export function draftWritePrompt({ common, node, rule, cards, plan, instruction, blocks, combined = false }) {
   return { stage: 'write', qualityMode: 'draft', author: common.author, audience: common.audience, chapter: node,
-    task: '写本章可供用户修改的完整初稿。短标题、短语概括后解释业务动作；复用主线编号维持前后关联。只返回JSON。引用factIds，不抄引文、不创建事实卡。推演标candidate，未知数字、客户、能力状态和企业资质不要当事实。',
+    task: combined ? '同一次完成本批原文归纳与本章撰写。facts列简短事实、主体、用途和原文sourceCardIds；正文用factIds引用facts的id。短标题概括后解释业务动作，复用主线编号。只返回JSON。推演标candidate；不编造数字、客户、能力或资质，不把内部经营研发和无案例说明当客户事实。'
+      : '写本章可供用户修改的完整初稿。短标题、短语概括后解释业务动作；复用主线编号维持前后关联。只返回JSON。引用factIds，不抄引文、不创建事实卡。推演标candidate，未知数字、客户、能力状态和企业资质不要当事实。',
+    ...(combined ? { generationMode: 'retrieve-write' } : {}),
     chapterRule: { write: rule.write || [] }, plan,
     facts: cards.map(({ evidence, ...card }) => card),
     ...(instruction ? { instruction, currentBlocks: blocks } : { lengthGuidance: '本章一次完成，围绕关键主题写3至6段；重点业务/场景充分说明动作和价值，避免重复凑字' }),
-    schema: { sections: [{ key: node.key, blocks: [{ text: '本章正文', factIds: ['输入事实卡ID'],
+    schema: { ...(combined ? { facts: [{ id: 'claim-1', text: '本批原文的简短概括', sourceCardIds: ['输入原文卡ID'], subject: 'customer/product/industry/company/vendor-internal/unknown',
+      purpose: 'capability/business-problem/trend/case/company-profile/constraint/internal/unknown', supportMode: 'sourced/candidate',
+      capabilityStatus: 'existing/pilot/planned/proposed/unknown', capabilityOwnership: 'self/third-party/customer/unknown' }] } : {}),
+      sections: [{ key: node.key, blocks: [{ text: '本章正文', factIds: [combined ? 'claim-1' : '输入事实卡ID'],
       supportMode: 'sourced/candidate', planRefs: { capabilityIds: [], scenarioIds: [], problemIds: [], trendIds: [] } }] }], reviewItems: [] } }
 }
 
-/** Fast first pass: one write per chapter; quality issues remain visible for later iteration. */
-export async function generateFastDraft({ llm, exec, args, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan, resume }) {
+/** Fast first pass: summarize and write each bounded source batch together; retain issues for iteration. */
+export async function generateFastDraft({ llm, exec, args, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan, resume, onDraft }) {
   const request = await createRequester({ llm, exec, state, saveState })
   const common = commonContext(rules, args), plan = acceptedPlan, nodes = flattenOutline(outline)
   const prior = new Map((resume ? state.chapters || [] : []).map(row => [row.key, row]))
@@ -29,6 +33,23 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
   await writeJson(path.join(dir, 'plan.json'), { ...plan, outline, ruleFingerprint: rules.fingerprint,
     confirmation: { planId: args.plan_id, sha256: args.plan_sha256 } })
   await saveState()
+  const finishedChapters = new Map()
+  let publication = Promise.resolve()
+  const snapshot = () => ({ title: plan.title, outline, choices: plan.choices,
+    sections: nodes.map(node => finishedChapters.get(node.key)?.section || { key: node.key, title: node.title, roleId: node.roleId, blocks: [] }),
+    chapterOutcomes: state.chapters.map(row => ({ ...row, status: finishedChapters.has(row.key) ? row.status : 'pending' })),
+    assemblyLinks: [], validationIssues: [], gaps: [],
+    reviewItems: strings([...list(plan.reviewItems), ...retrieval.issues, ...[...finishedChapters.values()].flatMap(chapter => chapter.reviewItems)]),
+    review: { status: 'pending', passed: false },
+  })
+  const publish = (node, chapter) => {
+    finishedChapters.set(node.key, chapter)
+    if (!onDraft) return Promise.resolve()
+    const draft = structuredClone(snapshot())
+    const phase = finishedChapters.size === nodes.length ? 'draft_reviewing' : 'draft_building'
+    publication = publication.then(() => onDraft(draft, phase))
+    return publication
+  }
   const results = await mapConcurrent(nodes, async (node, index) => {
     const progress = state.chapters[index], chapterDir = path.join(dir, 'chapters', node.key)
     const rule = rules.chapters[node.roleId] || rules.global.customChapter
@@ -36,12 +57,13 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
     let section, cards = [], issues = [], status = 'draft_unverified'
     try {
       progress.status = 'retrieving'; await saveState()
-      const found = await retrieval.forChapter(node, plan)
+      const found = await retrieval.forChapter(node, plan, [], { strategy: 'fast' })
       const sources = found.filter(source => source.kind === 'knowledge')
       progress.knowledgeHits = retrieval.chapterKnowledgeHits?.(node.key).length || 0
       progress.knowledgeQueries = retrieval.chapterKnowledgeQueries?.(node.key) || 0
       progress.knowledgeStatus = progress.knowledgeHits ? 'matched' : 'empty'
       if (resume && ['completed', 'draft_unverified'].includes(prior.get(node.key)?.status)) {
+        let reusable
         try {
           const old = JSON.parse(await readFile(path.join(chapterDir, 'chapter.json'), 'utf8'))
           if (old.section?.blocks?.length && old.section.blocks.every(block => list(block.evidence).every(ref =>
@@ -49,51 +71,71 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
             Object.assign(progress, prior.get(node.key), { reusedChapter: true, knowledgeHits: progress.knowledgeHits,
               knowledgeQueries: progress.knowledgeQueries, knowledgeStatus: progress.knowledgeStatus })
             if (!progress.knowledgeHits) progress.status = 'draft_unverified'
-            await saveState(); return old
+            reusable = old
           }
         } catch { /* Missing or invalid chapter is generated again. */ }
+        if (reusable) { await saveState(); await publish(node, reusable); return reusable }
       }
       if (!sources.length) {
         section = inputCard(node, rule, '本章知识库没有可用片段，请补充材料或调整章节要求')
         status = 'needs_input'
       } else {
-        progress.status = 'extracting'; await saveState()
-        const extraction = await collectFacts({ request, common, node, rule, evidence: sources, plan: chapterPlan(plan, node),
-          signal: exec.signal, tolerant: args.quality_mode === 'draft', onProgress: partial => writeJson(path.join(chapterDir, 'extraction-partial.json'), partial) })
-        await writeJson(path.join(chapterDir, 'extraction.json'), extraction)
-        const routed = routeFacts(extraction.facts, node, rule)
-        cards = factCards(routed.facts)
-        issues.push(...extraction.reviewItems, ...routed.reviewItems)
-        await writeJson(path.join(chapterDir, 'cards.json'), { cards })
-        if (!cards.length) {
-          section = inputCard(node, rule, '知识库命中材料尚不能支持本章内容，请补充对应事实')
-          status = 'needs_input'
-        } else {
-          progress.status = 'writing'; progress.writeAttempts = 1; await saveState()
-          let raw
-          try { raw = await request(draftWritePrompt({ common, node, rule, cards, plan: chapterPlan(plan, node) })) }
-          catch (error) {
+        const allCards = new Map(), body = [], bodyKeys = new Set()
+        const extraction = { facts: [], writingOutline: [], retrievalQueries: [], gaps: [], reviewItems: [], batches: [], mode: 'retrieve-write' }
+        const batches = sourceCardBatches(sources)
+        let repaired = false
+        progress.writeAttempts = 0; progress.extractionMode = 'combined-with-writing'
+        for (const [batchIndex, sourceCards] of batches.entries()) {
+          if (exec.signal?.aborted) throw abortError(exec.signal)
+          progress.status = 'writing'; progress.writeAttempts++; await saveState()
+          let raw, partial = false
+          try {
+            raw = await request(draftWritePrompt({ common, node, rule, cards: sourceCards,
+              plan: chapterPlan(plan, node), combined: true,
+              ...(body.length ? { instruction: '继续本章尚未展开的主题，不重复最近已写内容', blocks: body.slice(-8).map(block => ({ text: block.text.slice(0, 120) })) } : {}) }))
+          } catch (error) {
             if (exec.signal?.aborted) throw error
-            issues.push(`本章撰写未完整结束：${error.message}`)
-            raw = { sections: [{ key: node.key, blocks: partialProse(error.partialOutput) }] }
+            partial = true; issues.push(`本章撰写未完整结束：${error.message}`)
+            raw = { sections: [{ key: node.key, blocks: partialCombinedProse(error.partialOutput) }] }
           }
-          await writeJson(path.join(chapterDir, 'draft.json'), raw)
-          let checked = annotateDraft(list(raw.sections).filter(row => row.key === node.key).flatMap(row => list(row.blocks)), cards, evidence, node, plan)
-          if (args.quality_mode === 'standard' && checked.issues.length && checked.section.blocks.length) {
+          await writeJson(path.join(chapterDir, `draft-${batchIndex + 1}.json`), raw)
+          const materialized = materializeCombined(raw, sourceCards, evidence, node, rule)
+          for (const card of materialized.cards) allCards.set(card.id, card)
+          extraction.facts.push(...materialized.facts)
+          issues.push(...materialized.reviewItems, ...strings(raw?.reviewItems))
+          let checked = annotateDraft(materialized.blocks, materialized.cards, evidence, node, plan)
+          if (args.quality_mode === 'standard' && !repaired && checked.issues.length && checked.section.blocks.length) {
+            repaired = true
             try {
               progress.writeAttempts++; await saveState()
-              const repaired = await request(draftWritePrompt({ common, node, rule, cards, plan: chapterPlan(plan, node),
+              const repair = await request(draftWritePrompt({ common, node, rule, cards: materialized.cards, plan: chapterPlan(plan, node),
                 instruction: `修正本章问题，保留其他内容：${checked.issues.join('；')}`, blocks: checked.section.blocks }))
-              const next = annotateDraft(list(repaired.sections).filter(row => row.key === node.key).flatMap(row => list(row.blocks)), cards, evidence, node, plan)
+              const next = annotateDraft(list(repair.sections).filter(row => row.key === node.key).flatMap(row => list(row.blocks)), materialized.cards, evidence, node, plan)
               if (next.section.blocks.length) checked = next
             } catch (error) { if (exec.signal?.aborted) throw error; issues.push(`单轮修正未完成，保留初稿：${error.message}`) }
           }
-          section = checked.section; issues.push(...checked.issues, ...strings(raw.reviewItems))
-          if (!section.blocks.length) {
-            section = inputCard(node, rule, issues[0] || '本章暂未返回正文，请按章重试')
-            status = 'needs_input'
-          } else status = 'draft_unverified'
+          issues.push(...checked.issues)
+          if (!checked.section.blocks.length) issues.push(`第${batchIndex + 1}批未返回适合本章的正文；已保留其他批次内容，可按章补充或重试`)
+          for (const block of checked.section.blocks) {
+            const key = JSON.stringify([block.text, block.supportMode, block.factIds, block.capabilityStatus, block.capabilityOwnership])
+            if (!bodyKeys.has(key)) { bodyKeys.add(key); body.push({ ...block, id: `${node.key}-${body.length + 1}` }) }
+          }
+          extraction.batches.push({ batchId: String(batchIndex + 1), status: partial || !checked.section.blocks.length ? 'partial' : 'completed',
+            facts: materialized.facts.length, sourceCardIds: sourceCards.map(card => card.id),
+            evidenceIds: [...new Set(sourceCards.flatMap(card => card.evidence.map(ref => ref.id)))] })
+          extraction.reviewItems = strings(issues)
+          await writeJson(path.join(chapterDir, 'extraction.json'), extraction)
+          await writeJson(path.join(chapterDir, 'cards.json'), { cards: [...allCards.values()] })
+          await writeJson(path.join(chapterDir, 'writing-partial.json'), { sections: [{ key: node.key, blocks: body }] })
         }
+        cards = [...allCards.values()]
+        section = { key: node.key, title: node.title, roleId: node.roleId,
+          ...(node.framework ? { framework: node.framework } : {}), blocks: body }
+        if (!body.length) {
+          section = inputCard(node, rule, issues[0] || '知识库材料尚不能支持本章正文，请补充对应事实或按章重试')
+          status = 'needs_input'
+        } else status = 'draft_unverified'
+        await writeJson(path.join(chapterDir, 'draft.json'), { sections: [section] })
       }
       if (!progress.knowledgeHits) issues.push('本章当次检索零命中；规划锚点不算本章新命中，请补查')
     } catch (error) {
@@ -109,6 +151,7 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
     Object.assign(progress, { status, version, evidenceCount: cards.length, reviewItems: chapter.reviewItems,
       path: `chapters/${node.key}/chapter.json` })
     await saveState()
+    await publish(node, chapter)
     return chapter
   }, { concurrency: Math.max(1, nodes.length), signal: exec.signal })
   if (exec.signal?.aborted) throw abortError(exec.signal)
@@ -116,11 +159,14 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
     section: inputCard(nodes[index], rules.chapters[nodes[index].roleId] || {}, result.reason.message),
     status: 'needs_input', reviewItems: [result.reason.message] })
   const sections = chapters.map(chapter => chapter.section)
+  await publication
+  if (!state.draftReadyAt) state.draftReadyAt = new Date().toISOString()
   // Draft checks run once and annotate; no automatic repairs, panorama round, or recheck loop.
   const reviewed = await reviewAssembly({ request, common: { ...common, qualityMode: 'draft' }, plan, outline,
     sections, evidence, dir, state, saveState, signal: exec.signal, ruleFingerprint: rules.fingerprint,
-    allowRepairs: false, splitOnResource: false })
+    allowRepairs: false, splitOnResource: false, sourceWindowProjection: true })
   state.review.passed = false
+  state.reviewFinishedAt = new Date().toISOString()
   await saveState()
   return { title: plan.title, outline, sections, choices: plan.choices, assemblyLinks: [],
     reviewItems: strings([...list(plan.reviewItems), ...retrieval.issues, ...chapters.flatMap(chapter => chapter.reviewItems),

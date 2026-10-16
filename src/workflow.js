@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import path from 'node:path'
 import { convertFile, MAX_BYTES } from './convert.js'
 import { confirmedPlan } from './planning.js'
@@ -15,6 +15,12 @@ const writeJson = atomicJson
 const safeName = name => path.basename(String(name)).replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 100) || 'material'
 const attachmentKey = value => /^[a-f0-9]{64}$/u.test(String(value)) ? `sha256:${value}` : String(value)
 const deepClone = value => JSON.parse(JSON.stringify(value))
+
+async function writeText(file, text) {
+  const temporary = `${file}.${randomUUID()}.tmp`
+  await writeFile(temporary, text, { mode: 0o600 })
+  await rename(temporary, file)
+}
 
 async function* readInputs(ctx, exec, args) {
   const paths = Array.isArray(args.files) ? args.files : []
@@ -184,8 +190,11 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
   const state = { ...(prepared?.state || {}), runId: outputId, status: 'collecting_evidence', startedAt: prepared?.state?.startedAt || new Date().toISOString(),
     sourceRunId: args.source_run_id || null, projectId: args.project_id || null,
     ruleFingerprint: rules.fingerprint, loadedRules: rules.loaded, outlineSha256: sha256(JSON.stringify(outline)), ...actor(exec.agent) }
-  let pendingWrite = Promise.resolve()
+  delete state.finishedAt
+  delete state.error
+  let pendingWrite = Promise.resolve(), pendingPublish = Promise.resolve(), deliveredReport
   const saveState = () => {
+    if (state.reportReady && state.status === 'reviewing' && ['draft', 'standard'].includes(state.qualityMode)) state.status = 'draft_reviewing'
     state.updatedAt = new Date().toISOString()
     const snapshot = deepClone(state)
     const write = pendingWrite.then(() => writeJson(path.join(dir, 'run.json'), snapshot))
@@ -207,58 +216,80 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
     await retrieval.restoreEvidence([...overview.evidence, ...archived.evidence])
     state.retrieval = { status: retrieval.issues.length ? 'partial' : 'ready', mode: 'chapter-only' }
     await retrieval.flush()
+    const publish = async (generated, phase) => {
+      const intermediate = ['draft_building', 'draft_reviewing'].includes(phase)
+      await retrieval.flush()
+      await writeJson(path.join(dir, 'evidence.json'), { evidence, coverage: retrieval.coverage, gaps,
+        reviewItems: retrieval.issues })
+      if (!intermediate) state.retrieval.status = retrieval.issues.length ? 'partial' : 'completed'
+      state.outlineSha256 = sha256(JSON.stringify(generated.outline))
+      const proposedTitle = String(generated.title || '产品售前解决方案').slice(0, 120)
+      const titleNumbers = proposedTitle.match(/\d+(?:[.,]\d+)*(?:%|％|万|亿|年|月|日|家|人)?/gu) ?? []
+      const title = titleNumbers.some(number => !evidence.some(item => item.content.includes(number)))
+        ? '产品售前解决方案' : proposedTitle
+      const outcomes = chapterOutcomes({ ...generated, chapterOutcomes: generated.chapterOutcomes || state.chapters })
+      const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
+      const requiredGaps = incomplete.filter(row => row.required && !['pending', 'draft_unverified'].includes(row.status))
+        .map(row => `${row.title}：必需章节${row.status === 'partial' ? '尚未完整' : '未成稿'}，原因见逐章运行记录`)
+      const reviewStatus = intermediate ? phase : ['draft', 'standard'].includes(args.quality_mode) ? 'draft_ready'
+        : generated.sections.length ? (incomplete.length ? 'partial_draft' : 'needs_human_review') : 'failed'
+      const assemblyReview = { ...generated.review, ...(incomplete.length ? { passed: false,
+        incompleteChapters: incomplete.map(row => row.key) } : {}),
+        ...(intermediate ? { status: phase === 'draft_building' ? 'pending' : 'running', passed: false } : {}) }
+      const report = { schemaVersion: 2, runId: outputId, title, qualityMode: args.quality_mode || 'strict',
+        templateId: rules.template.id, outline: generated.outline, sections: generated.sections,
+        chapterOutcomes: outcomes, omittedChapters: outcomes.filter(row => row.status === 'omitted'),
+        choices: generated.choices, contentBalance: generated.contentBalance, validationIssues: generated.validationIssues,
+        assemblyLinks: generated.assemblyLinks, reviewItems: generated.reviewItems || [], assemblyReview,
+        confirmedPlan: { planId: args.plan_id, sha256: args.plan_sha256 },
+        gaps: [...new Set([...gaps, ...requiredGaps, ...(generated.gaps || [])])],
+        evidenceIds: evidence.map(item => item.id), ruleFingerprint: rules.fingerprint, loadedRules: rules.loaded,
+        reviewStatus, generatedAt: new Date().toISOString() }
+      const chapterRecords = deliveredReport?.chapterRecords || previousReport?.chapterRecords
+      if (chapterRecords) {
+        report.chapterRecords = deepClone(chapterRecords)
+        for (const row of outcomes) if (report.chapterRecords[row.key] && row.version > report.chapterRecords[row.key].version) {
+          report.chapterRecords[row.key] = { ...report.chapterRecords[row.key], version: row.version, approvalStatus: 'pending' }
+        }
+      }
+      const review = reviewDocument(report)
+      await writeJson(path.join(dir, 'report.json'), report)
+      await writeText(path.join(dir, 'report.md'), reportText(report))
+      await writeJson(path.join(dir, 'review.json'), review)
+      await writeText(path.join(dir, 'review.md'), reviewText(review))
+      state.status = reviewStatus
+      state.qualityMode = report.qualityMode
+      state.sections = report.sections.length; state.evidence = evidence.length
+      state.missingChapters = incomplete.filter(row => !['partial', 'draft_unverified', 'pending'].includes(row.status)).map(row => row.key)
+      state.pendingChapters = outcomes.filter(row => row.status === 'pending').map(row => row.key)
+      state.partialChapters = outcomes.filter(row => row.status === 'partial').map(row => row.key)
+      state.omittedChapters = outcomes.filter(row => row.status === 'omitted').map(row => row.key)
+      state.chapterOutcomes = outcomes
+      state.review = assemblyReview
+      state.reportPath = path.join(dir, 'report.md'); state.jsonPath = path.join(dir, 'report.json')
+      state.reviewPath = path.join(dir, 'review.md'); state.reviewJsonPath = path.join(dir, 'review.json')
+      state.reportReady = true
+      if (!state.firstChapterReadyAt && outcomes.some(row => row.status !== 'pending')) state.firstChapterReadyAt = new Date().toISOString()
+      if (phase === 'draft_reviewing' && !state.draftReadyAt) state.draftReadyAt = new Date().toISOString()
+      if (!intermediate) { state.draftReadyAt ||= new Date().toISOString(); state.finishedAt = new Date().toISOString() }
+      else delete state.finishedAt
+      deliveredReport = report
+      await saveState()
+      return report
+    }
+    const onDraft = (snapshot, phase) => {
+      const generated = deepClone(snapshot)
+      const write = pendingPublish.then(() => publish(generated, phase))
+      pendingPublish = write.catch(() => {})
+      return write
+    }
     let generated
     try {
-      generated = await generateChapters({ llm, args, exec, rules, outline, evidence, dir, state, saveState, retrieval, acceptedPlan: confirmed.document.plan, resume })
-    } finally { await retrieval.flush() }
-    await writeJson(path.join(dir, 'evidence.json'), { evidence, coverage: retrieval.coverage, gaps,
-      reviewItems: retrieval.issues })
-    state.retrieval.status = retrieval.issues.length ? 'partial' : 'completed'
-    state.outlineSha256 = sha256(JSON.stringify(generated.outline))
-    const proposedTitle = String(generated.title || '产品售前解决方案').slice(0, 120)
-    const titleNumbers = proposedTitle.match(/\d+(?:[.,]\d+)*(?:%|％|万|亿|年|月|日|家|人)?/gu) ?? []
-    const title = titleNumbers.some(number => !evidence.some(item => item.content.includes(number)))
-      ? '产品售前解决方案' : proposedTitle
-    const outcomes = chapterOutcomes({ ...generated, chapterOutcomes: generated.chapterOutcomes || state.chapters })
-    const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
-    const requiredGaps = incomplete.filter(row => row.required)
-      .map(row => `${row.title}：必需章节${row.status === 'partial' ? '尚未完整' : '未成稿'}，原因见逐章运行记录`)
-    const reviewStatus = ['draft', 'standard'].includes(args.quality_mode) ? 'draft_ready'
-      : generated.sections.length ? (incomplete.length ? 'partial_draft' : 'needs_human_review') : 'failed'
-    const assemblyReview = { ...generated.review, ...(incomplete.length ? { passed: false,
-      incompleteChapters: incomplete.map(row => row.key) } : {}) }
-    const report = { schemaVersion: 2, runId: outputId, title, qualityMode: args.quality_mode || 'strict',
-      templateId: rules.template.id, outline: generated.outline, sections: generated.sections,
-      chapterOutcomes: outcomes, omittedChapters: outcomes.filter(row => row.status === 'omitted'),
-      choices: generated.choices, contentBalance: generated.contentBalance, validationIssues: generated.validationIssues,
-      assemblyLinks: generated.assemblyLinks, reviewItems: generated.reviewItems, assemblyReview,
-      confirmedPlan: { planId: args.plan_id, sha256: args.plan_sha256 },
-      gaps: [...new Set([...gaps, ...requiredGaps, ...generated.gaps])],
-      evidenceIds: evidence.map(item => item.id), ruleFingerprint: rules.fingerprint, loadedRules: rules.loaded,
-      reviewStatus, generatedAt: new Date().toISOString() }
-    if (previousReport?.chapterRecords) {
-      report.chapterRecords = previousReport.chapterRecords
-      for (const row of outcomes) if (report.chapterRecords[row.key] && row.version > report.chapterRecords[row.key].version) {
-        report.chapterRecords[row.key] = { ...report.chapterRecords[row.key], version: row.version, approvalStatus: 'pending' }
-      }
-    }
-    const review = reviewDocument(report)
-    await writeJson(path.join(dir, 'report.json'), report)
-    await writeFile(path.join(dir, 'report.md'), reportText(report), { mode: 0o600 })
-    await writeJson(path.join(dir, 'review.json'), review)
-    await writeFile(path.join(dir, 'review.md'), reviewText(review), { mode: 0o600 })
-    state.status = reviewStatus
-    state.qualityMode = report.qualityMode
-    state.sections = report.sections.length; state.evidence = evidence.length
-    state.missingChapters = incomplete.filter(row => row.status !== 'partial').map(row => row.key)
-    state.partialChapters = outcomes.filter(row => row.status === 'partial').map(row => row.key)
-    state.omittedChapters = outcomes.filter(row => row.status === 'omitted').map(row => row.key)
-    state.chapterOutcomes = outcomes
-    state.review = assemblyReview
-    state.reportPath = path.join(dir, 'report.md'); state.jsonPath = path.join(dir, 'report.json')
-    state.reviewPath = path.join(dir, 'review.md'); state.reviewJsonPath = path.join(dir, 'review.json')
-    state.finishedAt = new Date().toISOString()
-    await saveState()
+      generated = await generateChapters({ llm, args, exec, rules, outline, evidence, dir, state, saveState, retrieval,
+        acceptedPlan: confirmed.document.plan, resume, onDraft })
+    } finally { await pendingPublish; await retrieval.flush() }
+    const report = await publish(generated)
+    const outcomes = report.chapterOutcomes
     return { runId: outputId, status: state.status, sections: report.sections.length, evidence: evidence.length,
       choices: report.choices, planningStatus: state.planning.status, failedChapters: outcomes.filter(item => ['failed', 'cancelled'].includes(item.status)).map(item => item.title),
       partialChapters: outcomes.filter(item => item.status === 'partial').map(item => item.title),
@@ -266,6 +297,21 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
       assemblyReview: report.assemblyReview, reviewItemsCount: report.reviewItems.length, gapsCount: report.gaps.length,
       reviewPath: state.reviewPath, reviewJsonPath: state.reviewJsonPath,
       reportPath: path.join(dir, 'report.md'), jsonPath: path.join(dir, 'report.json'), evidencePath: path.join(dir, 'evidence.json'), retrievalPath: path.join(dir, 'retrieval.json') }
-  } catch (error) { state.status = exec.signal?.aborted ? 'cancelled' : 'failed'; state.error = error.message; throw error }
+  } catch (error) {
+    state.status = exec.signal?.aborted ? 'cancelled' : 'failed'; state.error = error.message
+    state.finishedAt = new Date().toISOString()
+    if (deliveredReport) {
+      state.review = { ...state.review, status: exec.signal?.aborted ? 'cancelled' : 'partial', passed: false, error: error.message }
+      deliveredReport.assemblyReview = state.review
+      deliveredReport.reviewStatus = state.status
+      deliveredReport.reviewItems = [...new Set([...deliveredReport.reviewItems, `后续生成或关联复核未完成，已交初稿保留：${error.message}`])]
+      const review = reviewDocument(deliveredReport)
+      await writeJson(path.join(dir, 'report.json'), deliveredReport)
+      await writeText(path.join(dir, 'report.md'), reportText(deliveredReport))
+      await writeJson(path.join(dir, 'review.json'), review)
+      await writeText(path.join(dir, 'review.md'), reviewText(review))
+    }
+    throw error
+  }
   finally { await saveState() }
 }

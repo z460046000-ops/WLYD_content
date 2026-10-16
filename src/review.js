@@ -15,6 +15,7 @@ const RELATION_TARGET_CHARACTERS = 8000
 const RELATION_TARGET_BLOCKS = 10
 const RELATION_GROUP_CHARACTERS = 15000
 const RELATION_GROUP_BLOCKS = 12
+const SOURCE_WINDOW_PROJECTION_VERSION = 1
 const refIds = block => Object.values(block.planRefs || {}).flat()
 const tokens = text => new Set(String(text).toLowerCase().match(/[a-z]{3,}|[\p{Script=Han}]{2}/gu) || [])
 const roleTargets = role => role === 'business-challenges' || role === 'policy-trends'
@@ -27,12 +28,35 @@ const uniqueBlocks = blocks => [...new Map(blocks.map(block => [block.id, block]
 const navigation = blocks => blocks.map(block => ({ id: block.id, chapterKey: block.chapterKey, roleId: block.roleId,
   navigationExcerpt: block.text.slice(0, 120), planRefs: block.planRefs }))
 
+/** Quotes stay once in inputEvidence; paragraph refs locate exact archived substrings. */
+function projectSourceWindows(block, evidence) {
+  return { ...block, evidence: list(block.evidence).map(ref => {
+    const quote = String(ref.quote || ''), source = evidence.find(row => row.id === ref.id)
+    const start = quote ? source?.content.indexOf(quote) ?? -1 : -1
+    return start >= 0 ? { id: ref.id, span: { start, end: start + quote.length } }
+      : { id: ref.id, referenceStatus: 'unmatched' }
+  }) }
+}
+
 /** Full paragraph coverage plus bounded, chapter-coherent relation batches; indexes are navigation only. */
-export function reviewGroups(sections, outline) {
+export function reviewGroups(sections, outline, { sourceWindowProjection = false, evidence = [] } = {}) {
+  const project = block => sourceWindowProjection ? projectSourceWindows(block, evidence) : block
+  const projectedCost = blocks => JSON.stringify(sourceWindowProjection
+    ? { blocks: blocks.map(project), evidence: citedEvidence(blocks, evidence) } : blocks).length
+  const batchBlocks = (blocks, characters, count) => {
+    if (!sourceWindowProjection) return itemBatches(blocks, characters, count)
+    const batches = []; let batch = []
+    for (const block of blocks) {
+      if (batch.length && (projectedCost([...batch, block]) > characters || batch.length >= count)) { batches.push(batch); batch = [] }
+      batch.push(block)
+    }
+    if (batch.length) batches.push(batch)
+    return batches
+  }
   const roles = new Map(flattenOutline(outline).map(node => [node.key, node.roleId]))
   const all = sections.flatMap(section => section.blocks.map(block => ({ ...block, chapterKey: section.key, roleId: roles.get(section.key) })))
   const jobs = []
-  for (const section of sections) for (const [i, blocks] of itemBatches(section.blocks, CHAPTER_BATCH_CHARACTERS, CHAPTER_BATCH_BLOCKS).entries()) {
+  for (const section of sections) for (const [i, blocks] of batchBlocks(section.blocks, CHAPTER_BATCH_CHARACTERS, CHAPTER_BATCH_BLOCKS).entries()) {
     jobs.push({ scope: `chapter:${section.key}:${i + 1}`, kind: 'chapter',
       blocks: blocks.map(block => ({ ...block, chapterKey: section.key, roleId: roles.get(section.key) })), index: [], relationships: [] })
   }
@@ -54,7 +78,7 @@ export function reviewGroups(sections, outline) {
     const expectedRoles = roleTargets(focus.roleId).filter(role => [...roles.values()].includes(role))
     const missingRoles = expectedRoles.filter(role => !candidates.some(block => block.roleId === role))
     // Keep every known edge, even when a large mainline requires several bounded batches.
-    const batches = itemBatches(targets, RELATION_TARGET_CHARACTERS, RELATION_TARGET_BLOCKS)
+    const batches = batchBlocks(targets, RELATION_TARGET_CHARACTERS, RELATION_TARGET_BLOCKS)
     if (!batches.length) batches.push([])
     for (const [part, batch] of batches.entries()) relations.push({ focus, targets: batch,
       relation: { id: focus.id, focusId: focus.id, check: requiredRelation(focus.roleId),
@@ -77,7 +101,7 @@ export function reviewGroups(sections, outline) {
     const blocks = uniqueBlocks([relation.focus, ...relation.targets])
     const combined = uniqueBlocks([...(pending?.blocks || []), ...blocks])
     const exceeds = pending && (pending.chapterKey !== relation.focus.chapterKey || combined.length > RELATION_GROUP_BLOCKS
-      || JSON.stringify(combined).length > RELATION_GROUP_CHARACTERS || pending.relationships.length >= 4
+      || projectedCost(combined) > RELATION_GROUP_CHARACTERS || pending.relationships.length >= 4
       || pending.relationships.some(row => row.focusId === relation.focus.id))
     if (exceeds) commit()
     if (!pending) pending = { kind: 'relationship', chapterKey: relation.focus.chapterKey, blocks: [], relationships: [], index: [] }
@@ -88,6 +112,7 @@ export function reviewGroups(sections, outline) {
   commit()
   // Structured disagreements are cheap to discover; semantic contradictions remain mandatory in chapter audits.
   for (const job of jobs) {
+    if (sourceWindowProjection) job.sourceWindowProjectionVersion = SOURCE_WINDOW_PROJECTION_VERSION
     const ids = new Set(job.blocks.flatMap(block => list(block.planRefs?.capabilityIds)))
     job.boundaryConflicts = [...ids].flatMap(id => {
       const related = all.filter(block => list(block.planRefs?.capabilityIds).includes(id))
@@ -101,7 +126,8 @@ export function reviewGroups(sections, outline) {
 }
 
 export async function reviewAssembly({ request, common, plan, outline, sections, evidence, dir, state, saveState, signal, ruleFingerprint = null, validateBlock,
-  allowRepairs = true, splitOnResource = true }) {
+  allowRepairs = true, splitOnResource = true, sourceWindowProjection = false }) {
+  const projectSources = common?.qualityMode === 'draft' && sourceWindowProjection
   let current = structuredClone(sections)
   const records = [], repairs = [], reviewItems = []
   const cache = new Map(), repairCache = new Map()
@@ -129,7 +155,9 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
     const relationPlan = Object.fromEntries(['capabilities', 'problems', 'trends', 'scenarios'].map(field => [field,
       list(plan[field]).filter(row => relevantIds.has(row.id)).map(row => ({ ...row,
         ...(row.evidence ? { evidence: row.evidence.filter(ref => sourceIds.has(ref.id)) } : {}) }))]))
-    const hash = fingerprint({ reviewVersion: REVIEW_VERSION, ruleFingerprint, job, common, plan: relationPlan, outline, evidence: inputEvidence })
+    const inputSections = projectSources ? job.blocks.map(block => projectSourceWindows(block, evidence)) : job.blocks
+    const hash = fingerprint({ reviewVersion: REVIEW_VERSION, ruleFingerprint, job, common, plan: relationPlan, outline, evidence: inputEvidence,
+      ...(projectSources ? { inputSections, sourceWindowProjectionVersion: SOURCE_WINDOW_PROJECTION_VERSION } : {}) })
     const previous = cache.get(hash)
     if (previous) {
       const record = { ...structuredClone(previous), scope: job.scope, round, cached: true }
@@ -137,7 +165,9 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
     }
     try {
       const audit = await request({ ...stageContext(common, 'consistency-review'), stage: 'consistency-review', reviewScope: job.scope, round,
-        evidence: inputEvidence, sections: job.blocks, relationshipIndex: job.index, relationships: job.relationships,
+        evidence: inputEvidence, sections: inputSections, relationshipIndex: job.index, relationships: job.relationships,
+        ...(projectSources ? { sourceProjection: { version: SOURCE_WINDOW_PROJECTION_VERSION, spanUnit: 'UTF-16',
+          note: '段落evidence以原始来源的精确起止位置引用；完整对应原文在evidence及其excerpts，不能把位置编号当事实证明。相同引文多处出现时定位首个逐字匹配处。' } } : {}),
         boundaryConflicts: job.boundaryConflicts, plan: relationPlan,
         confirmedOutline: outline, scopeNote: job.note || '本批完整正文逐段核对，包含事实边界和语义矛盾；本章不承担的跨章项可说明不适用，由主线批次联合检查。',
         checks: REVIEW_CHECKS,
@@ -178,8 +208,9 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
       records.push(record); await persist(); return record
     }
   }
-  state.status = 'reviewing'; state.review = { status: 'running', passed: false, mode: 'chapter-and-relationships' }; await saveState()
-  const jobs = reviewGroups(current, outline)
+  state.status = 'reviewing'; state.review = { status: 'running', passed: false, mode: 'chapter-and-relationships',
+    ...(projectSources ? { sourceWindowProjectionVersion: SOURCE_WINDOW_PROJECTION_VERSION } : {}) }; await saveState()
+  const jobs = reviewGroups(current, outline, { sourceWindowProjection: projectSources, evidence })
   const first = await mapConcurrent(jobs, job => inspect(job, 0), { signal })
   if (signal?.aborted) throw signal.reason
   const repairJobs = first.flatMap((result, i) => result?.status === 'fulfilled' && result.value.repairNeeded ? [{ job: jobs[i], audit: result.value }] : [])
@@ -222,7 +253,7 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
     } catch (error) { if (signal?.aborted) throw error; repairs.push({ scope: job.scope, status: 'failed', error: error.message }); await persist() }
   }
   const changed = repairs.some(row => row.changed?.length)
-  const finalJobs = changed ? reviewGroups(current, outline) : jobs
+  const finalJobs = changed ? reviewGroups(current, outline, { sourceWindowProjection: projectSources, evidence }) : jobs
   // Rebuilding discovers new relationships; unchanged fingerprints reuse results without a model call.
   const finalResults = changed ? await mapConcurrent(finalJobs, job => inspect(job, 1), { signal }) : first
   const final = finalResults.map(result => result.status === 'fulfilled' ? result.value : { status: 'failed', passed: false, error: result.reason.message })
@@ -245,7 +276,8 @@ export async function reviewAssembly({ request, common, plan, outline, sections,
   }
   for (const row of repairs) { reviewItems.push(...(row.reviewItems || [])); if (row.error) reviewItems.push(`局部修正未完成：${row.error}`) }
   state.review = { status: completed ? 'completed' : 'partial', passed, mode: 'chapter-and-relationships',
-    groups: final.length, missingChapters, repairs: repairs.filter(row => row.changed?.length).length, coverage }
+    groups: final.length, missingChapters, repairs: repairs.filter(row => row.changed?.length).length, coverage,
+    ...(projectSources ? { sourceWindowProjectionVersion: SOURCE_WINDOW_PROJECTION_VERSION } : {}) }
   await persist()
   await writeJson(path.join(dir, 'assembly-reviewed.json'), { sections: current, review: state.review })
   await saveState()

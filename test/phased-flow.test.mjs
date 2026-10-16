@@ -29,12 +29,12 @@ async function setup() {
     search: async () => [{ id: 'C', knowledge_id: 'D', content }] }
   return { cwd, exec, client }
 }
-const planningModel = model(prompt => prompt.stage === 'extract' ? { facts: prompt.evidence.map(source => ({ text: content,
-  evidence: [{ id: source.id, quote: '产品支持统一线索记录' }] })) }
-  : { title: '线索协作方案', businessMode: 'needs-challenges', trendFramework: 'pest',
+const planningModel = model(prompt => ({ facts: prompt.evidence.map(source => ({ text: content,
+  evidence: [{ id: source.id, quote: '产品支持统一线索记录' }] })),
+    title: '线索协作方案', businessMode: 'needs-challenges', trendFramework: 'pest',
     capabilities: [{ id: 'cap-record', text: '统一记录', capabilityStatus: 'pilot', capabilityOwnership: 'self',
       evidence: [{ id: prompt.evidence[0].id, quote: '产品支持统一线索记录' }] }],
-    chapterGuidance: [{ key: 'service', focus: '解释销售与客服交接', retrievalQueries: ['销售与客服如何确认交接'] }] })
+    chapterGuidance: [{ key: 'service', focus: '解释销售与客服交接', retrievalQueries: ['销售与客服如何确认交接'] }] }))
 
 test('规划必须有当次知识库命中；本地材料无法单独换取可确认 planId', async () => {
   const f = await setup()
@@ -92,6 +92,48 @@ test('规划宏观取材并绑定身份目标，明确确认版本后才能生�
   await writeFile(file, JSON.stringify(doc))
   await assert.rejects(confirmedPlan({ args: selected, exec: f.exec }), /版本不匹配/u)
   assert.equal(prompts.filter(prompt => prompt.stage === 'plan').length, 1)
+  assert.equal(prompts.length, 1, '宏观取材与粗纲仅需一次模型请求')
+  const overview = JSON.parse(await readFile(path.join(path.dirname(file), 'overview-facts.json'), 'utf8'))
+  assert.equal(overview.verification, 'quote-match-only')
+  assert.equal(overview.batches[0].status, 'source_excerpt')
+  assert.equal(overview.facts[0].semanticStatus, 'source_excerpt_unreviewed')
+  assert.ok(preview.reviewItems.some(item => item.includes('主线语义需用户审阅')))
+})
+
+test('一次规划核对事实与主线引用，长知识原文只传有限宏观选段且完整留档', async () => {
+  const f = await setup(), prompts = []
+  const long = content.repeat(500) + '末尾绝不能作为模型未见引文。'
+  f.client.search = async () => [{ id: 'LONG', knowledge_id: 'D', content: long }]
+  const preview = await planOutline({ ...f, args: { project_id: 'P',
+    outline: [{ key: 'service', title: '协作服务', roleId: 'delivery-service' }] },
+  llm: model(prompt => {
+    prompts.push(prompt)
+    assert.equal(prompt.stage, 'plan')
+    assert.equal(prompt.planningMode, 'macro-single-pass')
+    assert.ok(prompt.evidence.length <= 4)
+    assert.ok(prompt.evidence.every(source => source.content.length <= 1800))
+    assert.equal(prompt.evidence[0].partial, true)
+    const id = prompt.evidence[0].id
+    return { title: '线索协作方案', facts: [
+      { text: '产品线索记录目前仅在试点范围开放', subject: 'product', purpose: 'capability', capabilityStatus: 'pilot',
+        evidence: [{ id, quote: '当前仅在试点范围内开放' }] },
+      { text: '未见原文不能算通过', evidence: [{ id, quote: '末尾绝不能作为模型未见引文' }] },
+    ], capabilities: [
+      { id: 'cap-record', text: '统一线索记录', subject: 'product', purpose: 'capability', capabilityStatus: 'pilot',
+        evidence: [{ id, quote: '当前仅在试点范围内开放' }] },
+      { id: 'cap-fake', text: '隐藏能力', evidence: [{ id, quote: '末尾绝不能作为模型未见引文' }] },
+    ], chapterGuidance: [{ key: 'service', capabilityIds: ['cap-record'], retrievalQueries: ['销售与客服交接'] }] }
+  }) })
+  assert.equal(prompts.length, 1)
+  assert.deepEqual(preview.capabilities.map(row => row.id), ['cap-record'])
+  const dir = path.join(f.cwd, 'artifacts/material-knowledge-assembly/runs', preview.planId)
+  const overview = JSON.parse(await readFile(path.join(dir, 'overview-facts.json'), 'utf8'))
+  assert.equal(overview.planningMode, 'macro-single-pass')
+  assert.equal(overview.verification, 'quote-match-only')
+  assert.equal(overview.facts.length, 1)
+  assert.equal(overview.batches[0].status, 'completed')
+  const archive = JSON.parse(await readFile(path.join(dir, 'evidence.json'), 'utf8'))
+  assert.equal(archive.evidence[0].content, long)
 })
 
 test('模型能力声明决定低思考档位，不继承会话 high；输出预算和输出耗尽独立记录', async () => {

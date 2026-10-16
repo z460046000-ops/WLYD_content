@@ -72,7 +72,7 @@ export function chapterOutcomes(report) {
     if (status === 'omitted' && (node.required !== false || hasContent)) status = hasContent ? 'partial' : 'failed'
     if (status === 'completed' && !hasContent) status = 'failed'
     if (status === 'partial' && !hasContent) status = 'failed'
-    if (!['completed', 'partial', 'omitted', 'failed', 'cancelled', 'draft_unverified', 'needs_input'].includes(status)) status = hasContent ? 'partial' : 'failed'
+    if (!['completed', 'partial', 'omitted', 'failed', 'cancelled', 'draft_unverified', 'needs_input', 'pending'].includes(status)) status = hasContent ? 'partial' : 'failed'
     if (hasContent && !['completed', 'omitted', 'draft_unverified'].includes(status)) status = 'partial'
     return { ...row, key: node.key, title: node.title, required: node.required !== false, status }
   })
@@ -84,14 +84,22 @@ export function reportText(report) {
   const byOutcome = new Map(outcomes.map(row => [row.key, row]))
   const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
   const lines = [`# ${report.title}`, '']
-  if (report.qualityMode && report.qualityMode !== 'strict') {
+  if (report.reviewStatus === 'draft_building') {
+    lines.push('> 初稿正在逐章生成：已完成的章节可先阅读，其余章节会继续补齐。', '')
+  } else if (report.reviewStatus === 'draft_reviewing') {
+    lines.push('> 初稿已交付，关联复核正在后台进行。可先阅读，复核结束后再修改章节。', '')
+  } else if (report.qualityMode && report.qualityMode !== 'strict') {
     lines.push('> 可编辑初稿：各章已保留正文或待补材料卡。未验证和待确认内容需逐章核对后使用。', '')
   } else if (report.reviewStatus === 'failed') {
     lines.push('> 生成未完成：没有可校验正文。以下保留已确认目录，待恢复后补充。', '')
   } else if (incomplete.length || report.reviewStatus === 'partial_draft') {
     lines.push('> 部分草稿：仍有章节未完成。已保留可用正文，请结合独立审核清单确认后使用。', '')
   }
-  if (report.assemblyReview?.passed === false && report.reviewStatus !== 'failed') {
+  if (['pending', 'running'].includes(report.assemblyReview?.status)) {
+    lines.push('> 关联复核尚未完成，检查结果随后补充。', '')
+  } else if (['cancelled', 'failed'].includes(report.reviewStatus) && report.qualityMode !== 'strict') {
+    lines.push('> 后续生成或关联复核已停止，已交初稿保留；可恢复任务后继续。', '')
+  } else if (report.assemblyReview?.passed === false && report.reviewStatus !== 'failed') {
     lines.push('> 合稿复核未通过，须查看独立审核清单。', '')
   }
   const hasContent = node => byOutcome.get(node.key)?.status !== 'omitted' || (node.children || []).some(hasContent)
@@ -102,6 +110,8 @@ export function reportText(report) {
       const section = byKey.get(node.key)
       const outcome = byOutcome.get(node.key)
       if (report.chapterRecords?.[node.key]?.approvalStatus === 'approved') lines.push('> 本章已由用户确认。', '')
+      else if (outcome?.status === 'pending') lines.push(['cancelled', 'failed'].includes(report.reviewStatus)
+        ? '> 本章尚未生成，可恢复任务后继续。' : '> 本章正在生成，稍后补齐。', '')
       else if (outcome?.status === 'draft_unverified') lines.push('> 本章为待审初稿，可按章提出修改要求。', '')
       else if (outcome?.status === 'needs_input') {
         lines.push(`> 待补材料：${section?.inputNeeded?.reason || outcome.error || '尚缺本章资料'}`, '')
@@ -154,7 +164,9 @@ export function reviewDocument(report) {
     for (const value of Array.isArray(report[field]) ? report[field] : []) add(value, category)
   }
   for (const row of outcomes) if (!['completed', 'omitted'].includes(row.status)) {
-    add(`${row.title}：${row.status === 'partial' ? '保留部分有效正文，仍未完成' : '未完成正文'}${row.error ? `（${row.error}）` : ''}`, 'chapter', row.key)
+    const label = row.status === 'pending' ? (['cancelled', 'failed'].includes(report.reviewStatus) ? '尚未生成，可恢复后继续' : '正在生成，稍后补齐')
+      : row.status === 'draft_unverified' ? '已有待审初稿' : row.status === 'partial' ? '保留部分有效正文，仍未完成' : '未完成正文'
+    add(`${row.title}：${label}${row.error ? `（${row.error}）` : ''}`, 'chapter', row.key)
   }
   const groups = [{ key: null, title: '整体审核', itemIds: items.filter(item => !item.chapterKeys.length).map(item => item.id) },
     ...nodes.map(node => ({ key: node.key, title: node.title,
@@ -164,6 +176,7 @@ export function reviewDocument(report) {
     summary: { uniqueItems: items.length, sourceItems: items.reduce((count, item) => count + item.occurrences, 0),
       draftChapters: outcomes.filter(row => row.status === 'draft_unverified').length,
       needsInputChapters: outcomes.filter(row => row.status === 'needs_input').length,
+      pendingChapters: outcomes.filter(row => row.status === 'pending').length,
       completedChapters: outcomes.filter(row => row.status === 'completed').length,
       partialChapters: outcomes.filter(row => row.status === 'partial').length,
       failedChapters: outcomes.filter(row => ['failed', 'cancelled'].includes(row.status)).length,
@@ -175,7 +188,10 @@ export function reviewDocument(report) {
 
 export function reviewText(review) {
   const byId = new Map(review.items.map(item => [item.id, item]))
-  const lines = ['# 内部审核清单', '', `稿件状态：${review.reviewStatus === 'failed' ? '生成失败' : review.reviewStatus === 'partial_draft' ? '部分草稿' : '待人工审核'}`, '',
+  const hasRetainedDraft = review.chapterOutcomes.some(row => ['completed', 'partial', 'draft_unverified', 'needs_input'].includes(row.status))
+  const statusLabel = { draft_building: '初稿逐章生成中', draft_reviewing: '初稿已交付，关联复核中', cancelled: '任务已停止，已交初稿保留',
+    failed: hasRetainedDraft ? '后续任务未完成，请查看已交内容' : '生成失败', partial_draft: '部分草稿' }
+  const lines = ['# 内部审核清单', '', `稿件状态：${statusLabel[review.reviewStatus] || '待人工审核'}`, '',
     `审核事项：${review.summary.uniqueItems} 项（原始记录 ${review.summary.sourceItems} 条，重复内容已合并）。`, '']
   const omitted = review.chapterOutcomes.filter(row => row.status === 'omitted')
   if (omitted.length) lines.push('## 已省略的可选章节', '', ...omitted.map(row => `- ${row.title}：${row.omissionReason || '未取得适合正文的证据'}`), '')

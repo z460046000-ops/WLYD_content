@@ -67,7 +67,7 @@ function planEvidenceIds(plan, guidance) {
   return unique(refs)
 }
 
-function chapterQueries(node, plan, rules, audience, extraQueries) {
+function chapterQueryContext(node, plan, rules, audience) {
   const guidance = guidanceFor(plan, node.key)
   const rule = rules?.chapters?.[node.roleId] || rules?.global?.customChapter || {}
   const focus = textOf(guidance.focus)
@@ -79,6 +79,11 @@ function chapterQueries(node, plan, rules, audience, extraQueries) {
   const custom = Array.isArray(node.questions) ? node.questions : []
   const questions = Array.isArray(rule.extractQuestions) ? rule.extractQuestions : []
   const dynamic = [node.title, textOf(node.goal), focus, anchors.join('；'), textOf(node.audience || audience), textOf(node.evidenceScope)].filter(Boolean).join('；')
+  return { guidance, focus, anchors, custom, questions, dynamic }
+}
+
+function chapterQueries(node, plan, rules, audience, extraQueries) {
+  const { guidance, custom, questions, dynamic } = chapterQueryContext(node, plan, rules, audience)
   const initial = unique([
     ...(Array.isArray(guidance.retrievalQueries) ? guidance.retrievalQueries : []).slice(0, 2).map(textOf),
     ...custom.slice(0, 1).map(textOf),
@@ -88,6 +93,19 @@ function chapterQueries(node, plan, rules, audience, extraQueries) {
   const supplemental = unique((Array.isArray(extraQueries) ? extraQueries : []).map(textOf)).filter(q => !initial.includes(q)).slice(0, 3)
   return (extraQueries?.length ? supplemental : initial).map(query => ({ query, purpose: extraQueries?.length ? 'supplement' : 'chapter',
     chapterKey: node.key, roleId: node.roleId }))
+}
+
+function fastChapterQueries(node, plan, rules, audience, extraQueries) {
+  const { guidance, focus, anchors, custom, questions, dynamic } = chapterQueryContext(node, plan, rules, audience)
+  const retrievalGuidance = unique((Array.isArray(guidance.retrievalQueries) ? guidance.retrievalQueries : []).map(textOf))
+  const supplemental = unique((Array.isArray(extraQueries) ? extraQueries : []).map(textOf))
+  const primary = unique([dynamic, supplemental.length ? supplemental[0] : retrievalGuidance[0]]).join('；')
+  const fallback = unique([node.title, focus, anchors[0], retrievalGuidance[1] || custom[0] || questions[0] ||
+    '具体业务场景、功能动作与适用边界的原文依据']).join('；')
+  return [primary, ...(!supplemental.length && fallback !== primary ? [fallback] : [])].map((query, index) => ({
+    query, purpose: supplemental.length ? 'supplement' : 'chapter', chapterKey: node.key, roleId: node.roleId,
+    strategy: 'fast', attempt: supplemental.length ? 'supplement' : index ? 'fallback' : 'primary',
+  }))
 }
 
 function balanced(items, descriptors, limit) {
@@ -374,13 +392,32 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
     return light ? (found.length ? found : fromLocal).slice(0, 4) : selected
   }
 
-  const forChapter = async (node, plan, extraQueries = []) => {
+  const forChapter = async (node, plan, extraQueries = [], { strategy = 'standard' } = {}) => {
     await prepare()
     if (!/^[a-z][a-z0-9-]*$/u.test(String(node?.key || '')) || !node?.roleId) throw new Error('章节缺少有效 key 或 roleId')
     if (extraQueries.length && supplemented.has(node.key)) return chapterSelection.get(node.key) || []
     if (extraQueries.length) supplemented.add(node.key)
-    const descriptors = chapterQueries(node, plan, rules, audience, extraQueries)
-    const found = balanced(await runQueries(descriptors), descriptors, 8)
+    if (!['standard', 'fast'].includes(strategy)) throw new Error('不支持的章节检索策略')
+    let descriptors
+    let remote
+    if (strategy === 'fast') {
+      const [primary, fallback] = fastChapterQueries(node, plan, rules, audience, extraQueries)
+      descriptors = [primary]
+      const queryStart = queries.length
+      remote = await runQueries(descriptors)
+      const primaryRecords = queries.slice(queryStart).filter(item => item.chapterKey === node.key &&
+        item.query === primary.query && item.purpose === primary.purpose && item.strategy === 'fast' && item.attempt === primary.attempt)
+      const tooThin = remote.reduce((size, item) => size + item.content.replace(/\s/gu, '').length, 0) < 160
+      // Only a successful, thin result can justify another query. A failed source stays visible as a failure.
+      if (fallback && tooThin && primaryRecords.length && primaryRecords.every(item => item.status === 'completed' && !item.partial)) {
+        descriptors.push(fallback)
+        remote = [...remote, ...await runQueries([fallback])]
+      }
+    } else {
+      descriptors = chapterQueries(node, plan, rules, audience, extraQueries)
+      remote = await runQueries(descriptors)
+    }
+    const found = balanced(unique(remote.map(item => item.id)).map(id => byId.get(id)), descriptors, 8)
     const hits = chapterHitIds.get(node.key) || new Set()
     for (const item of found) hits.add(item.id)
     chapterHitIds.set(node.key, hits)
@@ -398,7 +435,7 @@ export function createRetrieval({ client, projectId, evidence, dir, signal, rule
       const chapterDir = path.join(dir, 'chapters', node.key)
       await mkdir(chapterDir, { recursive: true, mode: 0o700 })
       await atomicJson(path.join(chapterDir, 'retrieval.json'), {
-        chapterKey: node.key, roleId: node.roleId, evidenceIds: chosen.map(item => item.id),
+        chapterKey: node.key, roleId: node.roleId, strategy, evidenceIds: chosen.map(item => item.id),
         knowledgeHitIds: [...hits], knowledgeHitCount: hits.size, knowledgeQueryCount: chapterQueriesLog.length,
         knowledgeStatus: hits.size ? 'matched' : 'empty',
         queries: chapterQueriesLog, localSelected: fromLocal.map(item => item.id), planAnchors: anchors.map(item => item.id),

@@ -38,7 +38,7 @@ test('独立阶段只携带本阶段共用规则与本章差异，关联原则�
 
 test('精简后仍保留章节的程序约束、选项与版本追踪', async () => {
   const rules = await loadRules()
-  assert.equal(rules.global.version, '0.10.0')
+  assert.equal(rules.global.version, '0.11.0')
   assert.equal(rules.global.contentBalance.groups.business.range[0], 15)
   assert.equal(rules.global.contentBalance.groups.solution.range[1], 60)
   assert.ok(rules.global.assemblyReview.mandatory)
