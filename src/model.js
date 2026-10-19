@@ -16,20 +16,33 @@ function configuredTimeout(value) {
     ? number : undefined
 }
 
-/** Configured values are bounded; a missing or invalid stage keeps the established 10-minute limit. */
-export function resolveStageTimeoutMs(stage, env = process.env) {
+function stageTimeoutPolicy(stage, env = process.env) {
   const raw = configurationValue('WLYD_ASSEMBLY_STAGE_TIMEOUT_MS', env)
-  if (!raw) return DEFAULT_STAGE_TIMEOUT_MS
+  const fallback = { timeoutMs: DEFAULT_STAGE_TIMEOUT_MS, source: 'plugin-default' }
+  if (!raw) return fallback
   try {
     const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return DEFAULT_STAGE_TIMEOUT_MS
-    return configuredTimeout(STAGES.has(stage) ? parsed[stage] : undefined)
-      ?? configuredTimeout(parsed.default) ?? DEFAULT_STAGE_TIMEOUT_MS
-  } catch { return DEFAULT_STAGE_TIMEOUT_MS }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fallback
+    const stageValue = configuredTimeout(STAGES.has(stage) ? parsed[stage] : undefined)
+    if (stageValue !== undefined) return { timeoutMs: stageValue, source: 'stage-config' }
+    const defaultValue = configuredTimeout(parsed.default)
+    return defaultValue === undefined ? fallback : { timeoutMs: defaultValue, source: 'default-config' }
+  } catch { return fallback }
+}
+
+/** Configured values are bounded; a missing or invalid stage keeps the established 10-minute limit. */
+export function resolveStageTimeoutMs(stage, env = process.env) {
+  return stageTimeoutPolicy(stage, env).timeoutMs
+}
+
+function queueTimeoutPolicy(env = process.env) {
+  const value = configuredTimeout(configurationValue('WLYD_ASSEMBLY_QUEUE_TIMEOUT_MS', env))
+  return value === undefined ? { timeoutMs: DEFAULT_QUEUE_TIMEOUT_MS, source: 'plugin-default' }
+    : { timeoutMs: value, source: 'queue-config' }
 }
 
 export function resolveQueueTimeoutMs(env = process.env) {
-  return configuredTimeout(configurationValue('WLYD_ASSEMBLY_QUEUE_TIMEOUT_MS', env)) ?? DEFAULT_QUEUE_TIMEOUT_MS
+  return queueTimeoutPolicy(env).timeoutMs
 }
 
 function positiveTimeout(value, label) {
@@ -169,9 +182,11 @@ function attemptError(error, detail, prompt, queueTimeoutSignal, stageTimeoutSig
 export async function askModel(llm, agent, signal, prompt, options = {}) {
   const queuedAtMs = Date.now()
   const metrics = { queuedAt: new Date(queuedAtMs).toISOString(), requestStartedAt: null,
-    firstEventAt: null, firstTextAt: null, finishedAt: null, queueMs: 0, serviceMs: null, usage: null,
+    firstEventAt: null, firstReasoningAt: null, firstTextAt: null, finishedAt: null, queueMs: 0, serviceMs: null, usage: null,
+    executionTimeoutMs: null, queueTimeoutMs: null, executionTimeoutSource: null, queueTimeoutSource: null,
     timeoutKind: null, provider: null, model: null, reasoningEffort: null, selectionSource: null,
     maxTokens: options.maxTokens ?? null, finishReason: null, outputCharacters: 0, reasoningCharacters: 0,
+    reasoningDeltaCount: 0, textDeltaCount: 0, hasReasoningOutput: false, hasTextOutput: false,
     attempts: 0, attemptDetails: [], rateLimitCount: 0, backoffMs: 0, failure: null }
   try {
     const selection = options.modelSelection || resolveModelSelection(agent)
@@ -179,14 +194,23 @@ export async function askModel(llm, agent, signal, prompt, options = {}) {
     Object.assign(metrics, { provider: selection.provider, model: selection.model,
       reasoningEffort: selection.reasoningEffort ?? null, selectionSource: selection.selectionSource || 'fixed-run' })
     const promptText = JSON.stringify(prompt)
-    const timeoutMs = positiveTimeout(options.timeoutMs ?? resolveStageTimeoutMs(prompt?.stage, options.env), '模型执行超时')
-    const queueTimeoutMs = positiveTimeout(options.queueTimeoutMs ?? resolveQueueTimeoutMs(options.env), '模型排队超时')
+    const executionPolicy = options.timeoutMs == null ? stageTimeoutPolicy(prompt?.stage, options.env)
+      : { timeoutMs: options.timeoutMs, source: 'caller' }
+    const queuePolicy = options.queueTimeoutMs == null ? queueTimeoutPolicy(options.env)
+      : { timeoutMs: options.queueTimeoutMs, source: 'caller' }
+    const timeoutMs = positiveTimeout(executionPolicy.timeoutMs, '模型执行超时')
+    const queueTimeoutMs = positiveTimeout(queuePolicy.timeoutMs, '模型排队超时')
+    Object.assign(metrics, { executionTimeoutMs: timeoutMs, queueTimeoutMs,
+      executionTimeoutSource: executionPolicy.source, queueTimeoutSource: queuePolicy.source })
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (signal?.aborted) throw abortError(signal)
       const attemptQueuedAtMs = Date.now()
       const detail = { attempt, queuedAt: new Date(attemptQueuedAtMs).toISOString(), requestStartedAt: null,
         finishedAt: null, queueMs: null, serviceMs: null, finishReason: null, outputCharacters: 0,
-        reasoningCharacters: 0, usage: null, failure: null }
+        reasoningCharacters: 0, reasoningDeltaCount: 0, textDeltaCount: 0,
+        hasReasoningOutput: false, hasTextOutput: false, firstReasoningAt: null, firstTextAt: null,
+        executionTimeoutMs: timeoutMs, queueTimeoutMs,
+        executionTimeoutSource: executionPolicy.source, queueTimeoutSource: queuePolicy.source, usage: null, failure: null }
       metrics.attemptDetails.push(detail)
       const queueTimeoutSignal = AbortSignal.timeout(queueTimeoutMs)
       const queueSignal = AbortSignal.any([signal || new AbortController().signal, queueTimeoutSignal])
@@ -210,8 +234,15 @@ export async function askModel(llm, agent, signal, prompt, options = {}) {
               source: { kind: 'plugin', plugin: 'wlyd-material-knowledge-assembly' } }],
             signal: requestSignal, sessionId: agent?.session?.id })) {
             if ((chunk.type === 'reasoning-delta' || chunk.type === 'text-delta') && chunk.text) {
-              if (!metrics.firstEventAt) metrics.firstEventAt = new Date().toISOString()
-              if (chunk.type === 'text-delta' && !metrics.firstTextAt) metrics.firstTextAt = new Date().toISOString()
+              const now = new Date().toISOString()
+              metrics.firstEventAt ||= now
+              if (chunk.type === 'reasoning-delta') {
+                metrics.firstReasoningAt ||= now; detail.firstReasoningAt ||= now
+                detail.reasoningDeltaCount++
+              } else {
+                metrics.firstTextAt ||= now; detail.firstTextAt ||= now
+                detail.textDeltaCount++
+              }
             }
             const usage = reportedUsage(chunk)
             if (usage) detail.usage = usage
@@ -220,6 +251,8 @@ export async function askModel(llm, agent, signal, prompt, options = {}) {
             if (chunk.type === 'block-end' && chunk.block?.type === 'text') blockText += chunk.block.text
             partialOutput = text || blockText
             detail.outputCharacters = Math.max(text.length, blockText.length)
+            detail.hasReasoningOutput = detail.reasoningCharacters > 0
+            detail.hasTextOutput = detail.outputCharacters > 0
             if (chunk.type === 'finish') {
               finishReason = String(chunk.reason?.kind || 'unknown')
               detail.finishReason = finishReason; finishFailure = chunk.reason?.failure
@@ -260,6 +293,10 @@ export async function askModel(llm, agent, signal, prompt, options = {}) {
         if (detail.serviceMs !== null) metrics.serviceMs = (metrics.serviceMs || 0) + detail.serviceMs
         metrics.outputCharacters = detail.outputCharacters
         metrics.reasoningCharacters += detail.reasoningCharacters
+        metrics.reasoningDeltaCount += detail.reasoningDeltaCount
+        metrics.textDeltaCount += detail.textDeltaCount
+        metrics.hasReasoningOutput ||= detail.hasReasoningOutput
+        metrics.hasTextOutput ||= detail.hasTextOutput
         metrics.finishReason = detail.finishReason
         if (detail.usage) {
           metrics.usage ||= {}
@@ -274,7 +311,12 @@ export async function askModel(llm, agent, signal, prompt, options = {}) {
       } finally { metrics.backoffMs += Date.now() - backoffStartedAtMs }
     }
   } catch (error) {
-    if (signal?.aborted) { metrics.failure = modelFailure(abortError(signal)); throw abortError(signal) }
+    if (signal?.aborted) {
+      const cancelled = abortError(signal)
+      if (error.partialOutput) cancelled.partialOutput = error.partialOutput
+      metrics.failure = modelFailure(cancelled)
+      throw cancelled
+    }
     const kind = classifyModelFailure(error)
     metrics.timeoutKind = kind === 'queue' || kind === 'stage' ? kind : null
     const failure = new Error(`${kind === 'context' ? '模型上下文超限，未裁剪输入' : '模型请求失败'}：${error.message}；阶段=${prompt?.stage || 'unknown'}；输入=${JSON.stringify(prompt).length} 字符`, { cause: error })

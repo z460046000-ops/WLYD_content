@@ -46,6 +46,108 @@ export function partialCombinedProse(text = '') {
   return sectionStart < 0 ? [] : partialProse(value.slice(sectionStart))
 }
 
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+/** Recover complete direct children of the response contract, never arbitrary nested text. */
+export function partialCombinedResponse(text = '') {
+  const value = String(text).trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, '')
+  const normalize = raw => ({ facts: list(raw?.facts).filter(object), sections: list(raw?.sections).filter(object).map(section => ({
+    ...(Object.hasOwn(section, 'key') ? { key: section.key } : {}), blocks: list(section.blocks).filter(object),
+  })) })
+  try { const raw = JSON.parse(value); return object(raw) ? normalize(raw) : { facts: [], sections: [] } } catch { /* Inspect the valid prefix only. */ }
+  const skip = start => { while (/\s/u.test(value[start] || '') && start < value.length) start++; return start }
+  const incomplete = { complete: false, end: value.length }
+  const parsed = (start, end) => {
+    try { return { complete: true, end, value: JSON.parse(value.slice(start, end)) } } catch { return incomplete }
+  }
+  const readValue = start => {
+    start = skip(start)
+    const first = value[start]
+    if (first === '"') {
+      let escaped = false
+      for (let index = start + 1; index < value.length; index++) {
+        if (escaped) escaped = false
+        else if (value[index] === '\\') escaped = true
+        else if (value[index] === '"') return parsed(start, index + 1)
+      }
+      return incomplete
+    }
+    if (first === '{' || first === '[') {
+      const stack = [first]; let quoted = false, escaped = false
+      for (let index = start + 1; index < value.length; index++) {
+        const char = value[index]
+        if (quoted) {
+          if (escaped) escaped = false
+          else if (char === '\\') escaped = true
+          else if (char === '"') quoted = false
+        } else if (char === '"') quoted = true
+        else if (char === '{' || char === '[') stack.push(char)
+        else if (char === '}' || char === ']') {
+          if (stack.pop() !== (char === '}' ? '{' : '[')) return incomplete
+          if (!stack.length) return parsed(start, index + 1)
+        }
+      }
+      return incomplete
+    }
+    let end = start
+    while (end < value.length && !/[\s,\]}]/u.test(value[end])) end++
+    return end > start ? parsed(start, end) : incomplete
+  }
+  const readArray = (start, readItem = readValue) => {
+    const items = []; let index = skip(start + 1)
+    while (index < value.length) {
+      if (value[index] === ']') return { complete: true, end: index + 1, value: items }
+      const item = readItem(index)
+      if (item.value !== undefined) items.push(item.value)
+      if (!item.complete) return { ...incomplete, value: items }
+      index = skip(item.end)
+      if (value[index] === ']') return { complete: true, end: index + 1, value: items }
+      if (value[index] !== ',') break
+      index = skip(index + 1)
+    }
+    return { ...incomplete, value: items }
+  }
+  const readObject = (start, field) => {
+    let index = skip(start + 1)
+    while (index < value.length) {
+      if (value[index] === '}') return { complete: true, end: index + 1 }
+      const name = readValue(index)
+      if (!name.complete || typeof name.value !== 'string') break
+      index = skip(name.end)
+      if (value[index] !== ':') break
+      const item = field(name.value, skip(index + 1))
+      if (!item.complete) return incomplete
+      index = skip(item.end)
+      if (value[index] === '}') return { complete: true, end: index + 1 }
+      if (value[index] !== ',') break
+      index = skip(index + 1)
+    }
+    return incomplete
+  }
+  const readSection = start => {
+    start = skip(start)
+    if (value[start] !== '{') return readValue(start)
+    const section = { blocks: [] }
+    const result = readObject(start, (name, index) => {
+      const item = name === 'blocks' && value[index] === '[' ? readArray(index) : readValue(index)
+      // An announced but unfinished key is not a keyless legacy section.
+      if (name === 'key') section.key = item.complete ? item.value : null
+      if (name === 'blocks' && value[index] === '[') section.blocks = item.value.filter(object)
+      return item
+    })
+    return { ...result, value: section }
+  }
+  const result = { facts: [], sections: [] }
+  if (value[0] !== '{') return result
+  readObject(0, (name, index) => {
+    const selected = ['facts', 'sections'].includes(name) && value[index] === '['
+    const item = selected ? readArray(index, name === 'sections' ? readSection : readValue) : readValue(index)
+    if (selected) result[name] = item.value.filter(object)
+    return item
+  })
+  return result
+}
+
 const sourceWarning = '本段直接依据原文选段，尚未独立概括或核验语义，请确认表述和能力边界'
 const uniqueRefs = refs => [...new Map(refs.map(ref => [JSON.stringify(ref), ref])).values()]
 

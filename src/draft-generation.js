@@ -4,9 +4,11 @@ import { flattenOutline } from './rules.js'
 import { mapConcurrent, abortError } from './scheduler.js'
 import { createRequester, commonContext, chapterPlan, writeJson, list, strings, itemBatches } from './context.js'
 import { annotateDraft, inputCard } from './fact-cards.js'
-import { sourceCardBatches, materializeCombined, partialCombinedProse } from './combined-writing.js'
+import { sourceCardBatches, materializeCombined, partialCombinedResponse } from './combined-writing.js'
 import { reviewAssembly } from './review.js'
 import { classifyModelFailure } from './model.js'
+import { draftBinding, loadDraftCheckpoint, createDraftCheckpoint, saveDraftBatch, saveDraftRecovery, reusableDraftChapter } from './content/draft-checkpoint.js'
+import { resolveChapterCards } from './content/card-recovery.js'
 
 function modelReason(error) {
   const kind = classifyModelFailure(error)
@@ -58,6 +60,9 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
   const request = await createRequester({ llm, exec, state, saveState })
   const common = commonContext(rules, args), plan = acceptedPlan, nodes = flattenOutline(outline)
   const prior = new Map((resume ? state.chapters || [] : []).map(row => [row.key, row]))
+  const attempt = state.resumeCount || 0
+  let previousReport = null
+  if (resume) { try { previousReport = JSON.parse(await readFile(path.join(dir, 'report.json'), 'utf8')) } catch { /* No valid prior report: generate from authorized sources. */ } }
   state.planning = { status: 'confirmed', planId: args.plan_id }
   state.status = 'generating'; state.qualityMode = args.quality_mode; state.chapterScheduling = 'all-parallel'; state.concurrency = 8
   state.chapters = nodes.map(node => ({ key: node.key, title: node.title, status: 'queued' }))
@@ -89,33 +94,41 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
     let diagnostics = { reasonCode: null, reasonCodes: [], knowledgeHits: null, knowledgeQueries: 0,
       selectedFacts: 0, excludedFacts: 0, modelFailures: 0, modelTimeouts: 0, emptyBatches: 0 }
     try {
-      progress.status = 'retrieving'; await saveState()
-      let found
-      try { found = await retrieval.forChapter(node, plan, [], { strategy: 'fast' }) }
-      catch (error) { addDiagnostic(diagnostics, 'retrieval_failed'); throw error }
-      const sources = found.filter(source => source.kind === 'knowledge')
-      diagnostics = await retrievalDiagnostics(retrieval, chapterDir, node, sources)
-      progress.diagnostics = diagnostics
-      progress.knowledgeHits = retrieval.chapterKnowledgeHits?.(node.key).length || 0
-      progress.knowledgeQueries = retrieval.chapterKnowledgeQueries?.(node.key) || 0
-      progress.knowledgeStatus = diagnostics.reasonCodes.includes('retrieval_failed') ? progress.knowledgeHits ? 'partial' : 'failed'
-        : diagnostics.partialQueries ? 'partial' : progress.knowledgeHits ? 'matched' : 'empty'
-      if (resume && ['completed', 'draft_unverified'].includes(prior.get(node.key)?.status)) {
-        let reusable
-        try {
-          const old = JSON.parse(await readFile(path.join(chapterDir, 'chapter.json'), 'utf8'))
-          if (old.section?.blocks?.length && old.section.blocks.every(block => list(block.evidence).every(ref =>
-            evidence.some(source => source.id === ref.id && source.content.includes(ref.quote))))) {
-            Object.assign(progress, prior.get(node.key), { reusedChapter: true, knowledgeHits: progress.knowledgeHits,
-              knowledgeQueries: progress.knowledgeQueries, knowledgeStatus: progress.knowledgeStatus })
-            if (!progress.knowledgeHits) progress.status = 'draft_unverified'
-            reusable = { ...old, diagnostics: { ...old.diagnostics, ...diagnostics,
-              selectedFacts: old.diagnostics?.selectedFacts || 0, reusedChapter: true } }
-            progress.diagnostics = reusable.diagnostics
-          }
-        } catch { /* Missing or invalid chapter is generated again. */ }
-        if (reusable) { await saveState(); await publish(node, reusable); return reusable }
+      const bindingSha256 = draftBinding({ args, rules, outline, node, plan, state })
+      const restored = resume ? await loadDraftCheckpoint({ chapterDir, bindingSha256, evidence, attempt }) : null
+      const reusable = resume ? await reusableDraftChapter({ chapterDir, previousReport, prior: prior.get(node.key), args,
+        rules, evidence, node, checkpoint: restored }) : null
+      if (reusable) {
+        const chapter = reusable.chapter
+        chapter.diagnostics = { ...chapter.diagnostics, knowledgeHits: 0, knowledgeQueries: 0,
+          checkpointKnowledgeHits: reusable.retrieval.knowledgeHitCount || 0, checkpointAttempt: attempt }
+        Object.assign(progress, prior.get(node.key), { status: chapter.status, version: chapter.version, reusedChapter: true,
+          reusedNeedsInput: Boolean(chapter.diagnostics.reusedNeedsInput), resumeDecision: 'reused-authorized-chapter',
+          knowledgeHits: 0, knowledgeQueries: 0, knowledgeStatus: 'checkpoint', diagnostics: chapter.diagnostics })
+        await saveState(); await publish(node, chapter); return chapter
       }
+      let sources
+      if (restored) {
+        sources = restored.sources
+        diagnostics = { ...diagnostics, ...restored.checkpoint.retrieval?.diagnostics, knowledgeHits: 0, knowledgeQueries: 0,
+          checkpointKnowledgeHits: restored.checkpoint.retrieval?.knowledgeHitIds?.length || 0, reusedEvidence: true }
+        progress.resumeDecision = 'reused-authorized-batches'; progress.knowledgeStatus = 'checkpoint'
+      } else {
+        progress.status = 'retrieving'; progress.resumeDecision = resume ? 'checkpoint-missing-or-invalid' : 'new-chapter'; await saveState()
+        let found
+        try { found = await retrieval.forChapter(node, plan, [], { strategy: 'fast' }) }
+        catch (error) { addDiagnostic(diagnostics, 'retrieval_failed'); throw error }
+        sources = found.filter(source => source.kind === 'knowledge')
+        diagnostics = await retrievalDiagnostics(retrieval, chapterDir, node, sources)
+        progress.knowledgeStatus = diagnostics.reasonCodes.includes('retrieval_failed') ? diagnostics.knowledgeHits ? 'partial' : 'failed'
+          : diagnostics.partialQueries ? 'partial' : diagnostics.knowledgeHits ? 'matched' : 'empty'
+      }
+      progress.diagnostics = diagnostics
+      progress.knowledgeHits = diagnostics.knowledgeHits || 0; progress.knowledgeQueries = diagnostics.knowledgeQueries || 0
+      const checkpoint = restored?.checkpoint || createDraftCheckpoint({ bindingSha256, attempt, sources,
+        retrieval: { knowledgeHitIds: retrieval.chapterKnowledgeHits?.(node.key) || [],
+          knowledgeQueryCount: progress.knowledgeQueries, diagnostics: structuredClone(diagnostics) } })
+      if (sources.length) await writeJson(path.join(chapterDir, 'draft-checkpoint.json'), checkpoint)
       if (!sources.length) {
         if (!diagnostics.reasonCode) addDiagnostic(diagnostics, 'no_usable_evidence')
         section = inputCard(node, rule, diagnostics.reasonCode === 'retrieval_failed'
@@ -131,26 +144,21 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
         const extraction = { facts: [], writingOutline: [], retrievalQueries: [], gaps: [], reviewItems: [], batches: [], mode: 'retrieve-write' }
         const batches = sourceCardBatches(sources)
         let repaired = false, recoveryCards = []
+        diagnostics = { ...diagnostics, reasonCode: null, reasonCodes: list(diagnostics.reasonCodes).filter(code =>
+          ['retrieval_failed', 'retrieval_partial', 'zero_knowledge_hits'].includes(code)),
+          selectedFacts: 0, excludedFacts: 0, modelFailures: 0, modelTimeouts: 0, emptyBatches: 0 }
+        diagnostics.reasonCode = diagnostics.reasonCodes[0] || null
         diagnostics.referenceIdMismatches = 0; diagnostics.referenceIdRepairs = 0; diagnostics.referenceIdRejectedFacts = 0
         diagnostics.recoveryAttempts = 0; diagnostics.recoveredBlocks = 0
-        progress.writeAttempts = 0; progress.extractionMode = 'combined-with-writing'
-        for (const [batchIndex, sourceCards] of batches.entries()) {
-          if (exec.signal?.aborted) throw abortError(exec.signal)
-          progress.status = 'writing'; progress.writeAttempts++; await saveState()
-          let raw, partial = false
-          try {
-            raw = await request(draftWritePrompt({ common, node, rule, cards: sourceCards,
-              plan: chapterPlan(plan, node), combined: true,
-              ...(body.length ? { instruction: '继续本章尚未展开的主题，不重复最近已写内容', blocks: body.slice(-8).map(block => ({ text: block.text.slice(0, 120) })) } : {}) }), { sourceCards })
-          } catch (error) {
-            if (exec.signal?.aborted) throw error
-            const reason = modelReason(error)
-            addDiagnostic(diagnostics, reason); diagnostics.modelFailures++
-            if (reason === 'model_timeout') diagnostics.modelTimeouts++
-            partial = true; issues.push(`本章撰写未完整结束：${error.message}`)
-            raw = { sections: [{ key: node.key, blocks: partialCombinedProse(error.partialOutput) }] }
+        progress.diagnostics = diagnostics
+        progress.writeAttempts = 0; progress.reusedBatches = 0; progress.extractionMode = 'combined-with-writing'
+        const addBlocks = blocks => {
+          for (const block of blocks) {
+            const key = JSON.stringify([block.text, block.supportMode, block.factIds, block.capabilityStatus, block.capabilityOwnership])
+            if (!bodyKeys.has(key)) { bodyKeys.add(key); body.push({ ...block, id: `${node.key}-${body.length + 1}` }) }
           }
-          await writeJson(path.join(chapterDir, `draft-${batchIndex + 1}.json`), raw)
+        }
+        const consume = (raw, sourceCards, view) => {
           const materialized = materializeCombined(raw, sourceCards, evidence, node, rule)
           const referenceAudit = materialized.referenceAudit || { normalized: [], rejected: [] }
           diagnostics.referenceIdRepairs += referenceAudit.normalized.length
@@ -169,33 +177,98 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
           if (!recoveryCards.length && materialized.cards.length) recoveryCards = materialized.cards
           extraction.facts.push(...materialized.facts)
           issues.push(...materialized.reviewItems, ...strings(raw?.reviewItems))
-          let checked = annotateDraft(materialized.blocks, materialized.cards, evidence, node, plan)
-          if (args.quality_mode === 'standard' && !repaired && checked.issues.length && checked.section.blocks.length) {
-            repaired = true
-            try {
-              progress.writeAttempts++; await saveState()
-              const repair = await request(draftWritePrompt({ common, node, rule, cards: materialized.cards, plan: chapterPlan(plan, node),
-                instruction: `修正本章问题，保留其他内容：${checked.issues.join('；')}`, blocks: checked.section.blocks }))
-              const next = annotateDraft(list(repair.sections).filter(row => row.key === node.key).flatMap(row => list(row.blocks)), materialized.cards, evidence, node, plan)
-              if (next.section.blocks.length) checked = next
-            } catch (error) { if (exec.signal?.aborted) throw error; issues.push(`单轮修正未完成，保留初稿：${error.message}`) }
-          }
-          issues.push(...checked.issues)
-          if (!checked.section.blocks.length) {
-            diagnostics.emptyBatches++
-            issues.push(`第${batchIndex + 1}批未返回适合本章的正文；已保留其他批次内容，可按章补充或重试`)
-          }
-          for (const block of checked.section.blocks) {
-            const key = JSON.stringify([block.text, block.supportMode, block.factIds, block.capabilityStatus, block.capabilityOwnership])
-            if (!bodyKeys.has(key)) { bodyKeys.add(key); body.push({ ...block, id: `${node.key}-${body.length + 1}` }) }
-          }
-          extraction.batches.push({ batchId: String(batchIndex + 1), status: partial || !checked.section.blocks.length ? 'partial' : 'completed',
-            facts: materialized.facts.length, sourceCardIds: sourceCards.map(card => card.id),
-            evidenceIds: [...new Set(sourceCards.flatMap(card => card.evidence.map(ref => ref.id)))], referenceAudit })
+          const checked = annotateDraft(view ? list(view.sections).filter(row => row?.key === node.key).flatMap(row => list(row.blocks))
+            : materialized.blocks, materialized.cards, evidence, node, plan)
+          return { materialized, checked, referenceAudit }
+        }
+        const persistPartial = async () => {
           extraction.reviewItems = strings(issues)
           await writeJson(path.join(chapterDir, 'extraction.json'), extraction)
           await writeJson(path.join(chapterDir, 'cards.json'), { cards: [...allCards.values()] })
           await writeJson(path.join(chapterDir, 'writing-partial.json'), { sections: [{ key: node.key, blocks: body }] })
+        }
+        if (resume && !restored && previousReport?.ruleFingerprint === rules.fingerprint
+          && previousReport.confirmedPlan?.planId === args.plan_id && previousReport.confirmedPlan?.sha256 === args.plan_sha256) {
+          // Legacy runs still retry conservatively, but a new failure must not erase verified old paragraphs.
+          const legacy = await resolveChapterCards({ chapterDir, evidence, node, rule })
+          const oldSection = list(previousReport.sections).find(row => row.key === node.key)
+          for (const card of legacy.cards) allCards.set(card.id, card)
+          const retained = annotateDraft(oldSection?.blocks, legacy.cards, evidence, node, plan)
+          addBlocks(retained.section.blocks.filter(block => list(block.evidence).length))
+          diagnostics.retainedLegacyBlocks = body.length
+        }
+        for (const [batchIndex, sourceCards] of batches.entries()) {
+          if (exec.signal?.aborted) throw abortError(exec.signal)
+          const factsBefore = extraction.facts.length
+          const previous = restored?.batches[batchIndex]
+          let referenceAudit = { normalized: [], rejected: [] }, batchHasProse = false
+          for (const saved of previous?.outputs || []) {
+            const replay = consume(saved.raw, sourceCards, saved.view)
+            issues.push(...replay.checked.issues)
+            addBlocks(replay.checked.section.blocks)
+            batchHasProse ||= replay.checked.section.blocks.length > 0
+            referenceAudit = replay.referenceAudit
+          }
+          let partial = !previous?.completed
+          if (previous?.completed) progress.reusedBatches++
+          else {
+            progress.status = 'writing'; progress.writeAttempts++; await saveState()
+            let raw, partialOutput, cancelled = false
+            try {
+              raw = await request(draftWritePrompt({ common, node, rule, cards: sourceCards,
+                plan: chapterPlan(plan, node), combined: true,
+                ...(body.length ? { instruction: '继续本章尚未展开的主题，不重复最近已写内容', blocks: body.slice(-8).map(block => ({ text: block.text.slice(0, 120) })) } : {}) }), { sourceCards })
+              partial = false
+            } catch (error) {
+              cancelled = Boolean(exec.signal?.aborted)
+              const reason = modelReason(error)
+              addDiagnostic(diagnostics, reason); diagnostics.modelFailures++
+              if (reason === 'model_timeout') diagnostics.modelTimeouts++
+              partial = true; issues.push(`本章撰写未完整结束：${error.message}`)
+              partialOutput = String(error.partialOutput || '')
+              raw = partialCombinedResponse(partialOutput)
+              // Only the one truly keyless legacy section can belong to this single-chapter request.
+              if (raw.sections.length === 1 && !Object.hasOwn(raw.sections[0], 'key')) raw.sections[0].key = node.key
+            }
+            // Preserve legacy first-attempt drafts; every new attempt has its own immutable archive path.
+            try { await readFile(path.join(chapterDir, `draft-${batchIndex + 1}.json`)) }
+            catch (error) { if (error.code !== 'ENOENT') throw error; await writeJson(path.join(chapterDir, `draft-${batchIndex + 1}.json`), raw) }
+            const consumed = consume(raw, sourceCards)
+            let checked = consumed.checked
+            referenceAudit = consumed.referenceAudit
+            if (!cancelled && args.quality_mode === 'standard' && !repaired && checked.issues.length && checked.section.blocks.length) {
+              repaired = true
+              try {
+                progress.writeAttempts++; await saveState()
+                const repair = await request(draftWritePrompt({ common, node, rule, cards: consumed.materialized.cards, plan: chapterPlan(plan, node),
+                  instruction: `修正本章问题，保留其他内容：${checked.issues.join('；')}`, blocks: checked.section.blocks }))
+                const next = annotateDraft(list(repair.sections).filter(row => row.key === node.key).flatMap(row => list(row.blocks)), consumed.materialized.cards, evidence, node, plan)
+                if (next.section.blocks.length) checked = next
+              } catch (error) { issues.push(`单轮修正未完成，保留初稿：${error.message}`) }
+            }
+            issues.push(...checked.issues)
+            addBlocks(checked.section.blocks)
+            batchHasProse ||= checked.section.blocks.length > 0
+            partial ||= !checked.section.blocks.length
+            await saveDraftBatch({ chapterDir, checkpoint, batchIndex, attempt, raw,
+              status: partial ? 'partial' : 'completed', partialOutput, view: { sections: [checked.section] } })
+            if (cancelled || exec.signal?.aborted) { await persistPartial(); throw abortError(exec.signal) }
+          }
+          if (partial) {
+            diagnostics.emptyBatches++
+            issues.push(`第${batchIndex + 1}批${batchHasProse ? '尚未完整结束' : '未返回适合本章的正文'}；已保留其他批次内容，可按章补充或重试`)
+          }
+          extraction.batches.push({ batchId: String(batchIndex + 1), status: partial ? 'partial' : 'completed',
+            facts: extraction.facts.length - factsBefore, reused: Boolean(previous?.completed), sourceCardIds: sourceCards.map(card => card.id),
+            evidenceIds: [...new Set(sourceCards.flatMap(card => card.evidence.map(ref => ref.id)))], referenceAudit })
+          await persistPartial()
+        }
+        // Keep an earlier bounded prose recovery too; it cannot mark unfinished source batches complete.
+        for (const saved of restored?.recoveryOutputs || []) {
+          const checked = annotateDraft(list(saved.raw.sections).filter(row => row?.key === node.key).flatMap(row => list(row.blocks)),
+            [...allCards.values()], evidence, node, plan)
+          issues.push(...checked.issues)
+          addBlocks(checked.section.blocks.filter(block => list(block.evidence).length))
         }
         cards = [...allCards.values()]
         // Only an empty chapter with verified, suitable cards gets one bounded prose-only recovery.
@@ -203,22 +276,27 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
         if (!body.length && recoveryCards.length && !repaired) {
           diagnostics.recoveryAttempts = 1
           const selected = itemBatches(recoveryCards, 6000, 6)[0]
+          let raw, partialOutput, cancelled = false
           try {
             progress.status = 'writing'; progress.writeAttempts++; await saveState()
-            const raw = await request(draftWritePrompt({ common, node, rule, cards: selected, plan: chapterPlan(plan, node),
+            raw = await request(draftWritePrompt({ common, node, rule, cards: selected, plan: chapterPlan(plan, node),
               instruction: '已有可核对事实但本章正文为空。仅使用这些事实卡写3至6段，factIds填写卡片完整id；不重新提取或补造事实。', blocks: [] }))
-            await writeJson(path.join(chapterDir, 'recovery-draft.json'), raw)
-            const checked = annotateDraft(list(raw?.sections).filter(row => row?.key === node.key).flatMap(row => list(row.blocks)), selected, evidence, node, plan)
-            issues.push(...checked.issues)
-            // No-card prose would merely hide the failure; keep only paragraphs with real restored citations.
-            body.push(...checked.section.blocks.filter(block => list(block.evidence).length))
-            diagnostics.recoveredBlocks = body.length
           } catch (error) {
-            if (exec.signal?.aborted) throw error
+            cancelled = Boolean(exec.signal?.aborted)
             addDiagnostic(diagnostics, modelReason(error)); diagnostics.modelFailures++
             if (modelReason(error) === 'model_timeout') diagnostics.modelTimeouts++
             issues.push(`单章补写未完成，已核验事实卡保留：${error.message}`)
+            partialOutput = String(error.partialOutput || '')
+            raw = partialCombinedResponse(partialOutput)
           }
+          await saveDraftRecovery({ chapterDir, checkpoint, attempt, raw, partialOutput })
+          try { await readFile(path.join(chapterDir, 'recovery-draft.json')) }
+          catch (error) { if (error.code !== 'ENOENT') throw error; await writeJson(path.join(chapterDir, 'recovery-draft.json'), raw) }
+          const checked = annotateDraft(list(raw?.sections).filter(row => row?.key === node.key).flatMap(row => list(row.blocks)), selected, evidence, node, plan)
+          issues.push(...checked.issues)
+          addBlocks(checked.section.blocks.filter(block => list(block.evidence).length))
+          diagnostics.recoveredBlocks = body.length
+          if (cancelled || exec.signal?.aborted) { await persistPartial(); throw abortError(exec.signal) }
           await writeJson(path.join(chapterDir, 'writing-partial.json'), { sections: [{ key: node.key, blocks: body }] })
         }
         section = { key: node.key, title: node.title, roleId: node.roleId,
@@ -232,10 +310,10 @@ export async function generateFastDraft({ llm, exec, args, rules, outline, evide
           status = fault ? 'failed' : 'needs_input'
           if (fault) section.inputNeeded = { ...section.inputNeeded, kind: 'generation_error', questions: [],
             nextAction: '已保存证据和模型草稿；可用本章 revise 恢复卡池后补写，或显式 resume 接续。' }
-        } else status = 'draft_unverified'
+        } else status = extraction.batches.some(batch => batch.status === 'partial') ? 'partial' : 'draft_unverified'
         await writeJson(path.join(chapterDir, 'draft.json'), { sections: [section] })
       }
-      if (!progress.knowledgeHits) issues.push('本章当次检索零命中；规划锚点不算本章新命中，请补查')
+      if (!progress.knowledgeHits && !diagnostics.reusedEvidence) issues.push('本章当次检索零命中；规划锚点不算本章新命中，请补查')
     } catch (error) {
       if (exec.signal?.aborted) { progress.status = 'cancelled'; await saveState(); throw abortError(exec.signal) }
       if (!diagnostics.reasonCode) addDiagnostic(diagnostics, 'generation_failed')

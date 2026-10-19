@@ -90,7 +90,7 @@ test('用途不匹配、模型超时和截断可定位；截断仍保留已写�
   assert.equal(timed.chapter.diagnostics.modelTimeouts, 1)
   const interrupted = await run(t, { interrupted: true })
   assert.equal(interrupted.chapter.diagnostics.reasonCode, 'model_output_limit')
-  assert.equal(interrupted.chapter.status, 'draft_unverified')
+  assert.equal(interrupted.chapter.status, 'partial', '有完整段落但批次被中断仍需恢复，不能冒充整章完成')
   assert.equal(interrupted.chapter.section.blocks.length, 1)
   assert.equal(interrupted.chapter.diagnostics.hasProse, true)
   assert.equal(interrupted.state.chapters[0].diagnostics.reasonCode, 'model_output_limit')

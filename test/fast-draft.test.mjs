@@ -170,7 +170,7 @@ test('章节评论追问与解决不调用模型；修改只影响指定章，�
   const latest = await call({ action: 'list' })
   assert.equal(latest.chapters[0].version, 2)
   assert.equal(latest.chapters[0].notes.length, 2)
-  assert.equal(latest.chapters[2].version, 2)
+  assert.equal(latest.chapters[2].version, 1, '已确认用途不符的待补章恢复时不重复提写或递增版本')
   assert.deepEqual(latest.chapters[0].blocks, revised.chapter.blocks)
 })
 

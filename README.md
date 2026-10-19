@@ -2,7 +2,7 @@
 
 独立 DSH/Cordis 插件：导入材料、同步项目知识库，按规则生成可审阅的解决方案正文。当前文案输出 Markdown/JSON，并独立导出 DOCX 和可自由翻页的演示 HTML；图形编辑器、架构图绘制、PPTX/PDF 导出尚未实现，不依赖旧插件或 HTML Anything。
 
-**当前源码为 0.10.1：修复来源编号错配、空卡池修订、空章有界补写和HTML有效重试。知识库取材、大纲确认、前后关联检查与文案/输出物分离继续保留。** 2026-10-19 已按用户指令更新本机测试环境 **3081** 并完整重启，浏览器确认 v0.10.1 已启用、组件运行中；真实模型质量与耗时尚未实测。安装状态、验证边界见 [测试记录](docs/test-record.md)，后续任务见 [待办](docs/backlog.md)。
+**当前源码为 0.10.2：修复草稿超时被硬编码覆盖，保存中断事实/正文，按检查点只重试未完成批次。** 同时补充“按章节提取关键信息、精简句式，再交 xiaoma-studio 生成 HTML”的输出提示词。当前3081仍安装0.10.1，本轮不安装或重启、不改正在运行的任务或模型路由。验证和安装边界见[测试记录](docs/test-record.md)，实施范围见[超时与恢复方案](docs/timeout-recovery-plan-20261019.md)。
 
 全局规则已更新到 **0.11.0**，旧 `planId` 的规则指纹不再匹配：从0.8.0升级后重新 `plan → confirm → generate`，可以复用原导入材料，不必重复上传。
 
@@ -17,7 +17,7 @@
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 日常安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
 | 本机测试环境 | `http://127.0.0.1:3081/`，profile 为 `wlyd-assembly-021-browser`（历史名称）；2026-10-19 已加载0.10.1 |
-| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.10.1.tgz`；SHA-256 见 `releases/SHA256SUMS`，已安装到3081 |
+| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.10.2.tgz`；SHA-256 见 `releases/SHA256SUMS`，本轮不安装 |
 | 历史安装包 / 校验 | `releases/` / `releases/SHA256SUMS` |
 | 运行产物 | **当前 DSH 会话工作区**的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
 
@@ -42,6 +42,7 @@ src/
 ├── generation.js    按质量模式路由；保留 strict 分批撰写和校验
 ├── draft-generation.js 快速初稿：各章取证、合并提写、逐章交稿、单轮检查
 ├── combined-writing.js 原文卡分批、同次生成事实与正文、补来源和中断恢复
+├── content/draft-checkpoint.js 快稿批次绑定、尝试归档、授权复用与失败批恢复
 ├── fact-cards.js    稳定事实卡编号、程序补引文、未验证标注与待补卡
 ├── chapters.js      章节评论、追问、范围修改、版本、定稿与关联复查
 ├── panorama.js      小范围单轮全景补充，保留原稿
@@ -59,6 +60,14 @@ rules/
 ```
 
 模板定义目录，章节角色定义取材和写法，全局规则定义共同纪律；产品事实来自用户材料和授权知识库。goodcase 只学习方法，不作为本次客户、产品能力、数字或奖项证据。`extractQuestions` 是重点线索，不是白名单。全景规则的学习依据见 [全景学习记录](docs/panorama-rule-evidence.md)。
+
+### 0.10.2 超时与恢复
+
+- 草稿遵循已有阶段超时配置，缺省单次执行10分钟、排队单独30分钟；显式调用配置仍优先。记录实际界限、配置来源、首思考/正文及增量数量。延长上限不代表模型变快，也不改变模型强度。
+- 超时、截断或取消时，按`attempts/<resumeCount>/`保存原始文本和可独立解析的完整事实/段落；仍核对同批来源和章节用途。思考文字、半截对象和`facts.text`不当作正文。
+- draft/standard恢复先核对当前授权和输入绑定，再复用完成章、已明确用途不符的待补章和成功批次；未完成批次才调用模型。恢复来源标`checkpoint`，不冒充本轮新检索命中；原检索失败/部分失败则重新取材。
+- 有正文但仍有中断批次标`partial`，整篇标`partial_draft`；不会因已存在一段正文就跳过本章剩余批次。旧版没有批次检查点时保守重试，保留可核对的旧正文；原先未保存的中断文本无法补回。strict仍按既有章级流程恢复。
+- 全局文字规则仍0.11.0。目录确认键序、可选章跳过策略另列待办，本版不改。
 
 ### 0.10.1 来源契约与恢复
 
@@ -104,7 +113,7 @@ rules/
 - **按章修改。** `wlyd_assembly_chapter` 支持评论、追问、解决、修改、定稿和解锁。修改复用该章事实卡与来源，不重新提取全篇；保留版本，其他章节正文、引用和状态不变，合稿按指纹复用未变化的检查。
 - **保留三档。** draft 不自动修正；standard 最多修正一次，仍有问题则标注保留；strict 维持原严格生成、过滤和有界修正路径。三种模式都要求已确认大纲。相同规划的不同模式使用不同运行记录。
 
-初稿原文每窗最多2400字符、重叠160字符，每批正文最多8000字符；覆盖选材尾部，不把全集塞进一次请求。续写只带最近八段的短摘要，复核原文按来源去重，避免每段重复整窗引文。单次模型请求执行窗口三分钟，排队另计；不是全流程时限。未新增统一输出token上限，`WLYD_ASSEMBLY_OUTPUT_BUDGETS` 可显式配置。实际提速仍待用户测试，模型/网关不可用、磁盘错误或取消时无法保证正文产出。
+初稿原文每窗最多2400字符、重叠160字符，每批正文最多8000字符；覆盖选材尾部，不把全集塞进一次请求。续写只带最近八段的短摘要，复核原文按来源去重，避免每段重复整窗引文。单次模型请求遵循阶段超时配置，缺省执行窗口十分钟，排队另计；不是全流程时限。未新增统一输出token上限，`WLYD_ASSEMBLY_OUTPUT_BUDGETS` 可显式配置。实际提速仍待用户测试，模型/网关不可用、磁盘错误或取消时无法保证正文产出。
 
 ### 0.7.0 提示词组织
 
@@ -161,9 +170,9 @@ flowchart TD
 
 所有章节同时进入任务；每章取证就绪就写，不等待其他章全部提取完。模型请求共享默认八个名额，可配置 1–12，并可对具体模型路由设置更小额度；后台查询共享四个名额。路由先取额度，饱和路由不会占住其他路由的全局额度。超过额度会排队，“全章并行任务”不等于无限同时调用模型。
 
-`generate` 完成校验和作业接纳后返回 `runId`，正文由 DSH 宿主作业继续执行；后续用 `status` 查询和 `cancel` 取消。作业只在 DSH 进程与所属会话生命周期内运行；关电脑或结束进程会停止，不能当云端持久队列。重启后显式 `mode=resume`，校验材料、规则、目录、固定模型与当前授权范围再接续；保留可验证的已完成章节。相同输入默认复用已有任务，`mode=regenerate` 明确创建新运行。旧版没有新版检查点的任务不可直接恢复。
+`generate` 完成校验和作业接纳后返回 `runId`，正文由 DSH 宿主作业继续执行；后续用 `status` 查询和 `cancel` 取消。作业只在 DSH 进程与所属会话生命周期内运行；关电脑或结束进程会停止，不能当云端持久队列。重启后显式 `mode=resume`，校验材料、规则、目录、固定模型与当前授权范围再接续；保留可验证的已完成章节。相同输入默认复用已有任务，`mode=regenerate` 明确创建新运行。缺少run-input.json的更早任务不能直接恢复；0.10.1任务无批次清单时走保守恢复路径。
 
-恢复以整章提取、整章成稿为单位：`partial` 章可复用有效提取，但本章写作会重写，并非只恢复失败批；其他完成章保留。全景补充和关联检查也按输入指纹复用，正文、证据或规则变化则重新核对。接纳候选和历史锁保留供排查；孤儿接纳记录会明确报错，不无限冒充排队。
+draft/standard的`draft-checkpoint.json`按确认规划、规则、材料和模型绑定原批次：通过当前权限与内容摘要核对后，完成批跳过，partial/pending批接续，完整部分事实和段落保留。缺失或无效清单不跳过批次；旧稿仍保留可核对正文。strict继续以整章提取、整章成稿为恢复单位，本章写作可能重写。全景补充和关联检查也按输入指纹复用，正文、证据或规则变化则重新核对。接纳候选和历史锁保留供排查；孤儿接纳记录会明确报错，不无限冒充排队。
 
 ### 守住前后关联的内容（draft 只检查与标注；以下修正规则用于 strict）
 
@@ -230,7 +239,7 @@ flowchart TD
 
 > 加入“实施与服务”，绑定 delivery-service，放在技术平台之后；重新规划并展示给我确认。
 
-自定义 `roleId=custom` 需说明 `goal`、`audience`、`questions`、`evidenceScope`、`acceptance`。目前可恢复失败或中断任务，尚无任意指定成功章的对话扩写/重写入口。
+自定义 `roleId=custom` 需说明 `goal`、`audience`、`questions`、`evidenceScope`、`acceptance`。失败或中断任务可恢复；成功章通过`chapter action=revise`扩写、缩写或重写，须传最新版本。
 
 ### 只测试两类全景内容
 
@@ -266,7 +275,9 @@ artifacts/material-knowledge-assembly/runs/<runId>/
 │   ├── retrieval.json        最近一轮选择与本章查询日志
 │   ├── extraction-partial.json / supplement-partial.json
 │   ├── extraction.json       合并后的事实卡、来源、批次与待审项
-│   ├── checkpoint.json       章级输入绑定、证据/事实/正文指纹与完成阶段
+│   ├── checkpoint.json       strict章级输入绑定、证据/事实/正文指纹与完成阶段
+│   ├── draft-checkpoint.json draft/standard原批次、来源摘要、尝试路径与完成状态
+│   ├── attempts/<n>/         各次batch-N.json、view.json、partial.txt及recovery原件
 │   ├── draft-*.json          各批原始撰写/修正输出
 │   ├── draft.json / chapter.json / error.json
 │   └── enriched.json         有有效全景追加时另存
@@ -284,11 +295,11 @@ artifacts/material-knowledge-assembly/runs/<runId>/
 
 ## 5. 安装与配置
 
-Node.js 22+、DSH 和内容中台账号为前提。0.10.1安装命令如下；本机实际部署结果见测试记录：
+Node.js 22+、DSH 和内容中台账号为前提。0.10.2安装命令如下（供下次切换使用，本轮未执行）；当前3081仍为0.10.1：
 
 ```bash
-shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.10.1.tgz
-dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.10.1.tgz"
+shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.10.2.tgz
+dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.10.2.tgz"
 ```
 
 校验值以 `releases/SHA256SUMS` 为准。这份包的文档是打包时快照；发布后补记的安装结果以仓库当前 README 和测试记录为准。若修改源码或文档，应升新版本再打包，避免同名包产生不同哈希。
@@ -321,7 +332,7 @@ dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-mater
 ## 6. 仍未打通与验收边界
 
 - 本版新增的是本机任务去重、检查点与显式恢复；DSH 退出不会继续后台生成。没有云端队列、远程调度或跨设备自动接续；成功章已可通过 chapter action=revise 定向修改。旧版任务没有新版检查点时需重新规划启动。
-- 0.7.0已做一次真实三章组稿且仅产出部分草稿；0.10.1已在本机3081安装并确认加载，真实成稿质量、token与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、安装与自动化结果见测试记录。
+- 当前3081仍为0.10.1；0.10.2仅源码、自动化及安装包验证，本轮未启动真实模型生成。实际成稿质量、token与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、安装与自动化结果见测试记录。
 - 知识库关联候选和本地词面选段可能漏材料；原文回读、Wiki/图谱和公开检索未接，缺少来源的政策不能冒充检索结果。
 - UTF-8 文本、Markdown、DOCX、文字 PDF、PPTX、XLSX、ZIP 支持文字提取；不保证图表、图片文字、版式完整。图片/扫描件 OCR、DMG、旧 Office、音视频、链接抓取未接。
 - 单批 100 文件、单文件 500 MB；ZIP 最多 1000 项/共 1 GB。入口限额不证明任意格式 500 MB 全链路可用，真实大文件链路待验收。

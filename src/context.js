@@ -41,7 +41,6 @@ export async function createRequester({ llm, exec, state, saveState }) {
     try {
       const result = await askModel(llm, exec.agent, exec.signal, prompt, { modelSelection: selection,
         maxTokens: stageOutputBudget(prompt.stage, selection),
-        ...(prompt.qualityMode === 'draft' ? { timeoutMs: 180000 } : {}),
         onMetrics: metrics => Object.assign(record, metrics) })
       record.status = 'completed'
       return result

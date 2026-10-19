@@ -24,7 +24,8 @@ export function coverageFromReport(report = {}) {
   const count = predicate => chapterDiagnostics.filter(predicate).length
   const totalChapters = chapterDiagnostics.length, proseChapters = count(row => row.hasProse)
   return { totalChapters, proseChapters, proseRatio: totalChapters ? proseChapters / totalChapters : 0,
-    contentStatus: !proseChapters ? 'empty' : proseChapters + count(row => row.status === 'omitted') === totalChapters ? 'complete' : 'partial',
+    contentStatus: !proseChapters ? 'empty' : proseChapters + count(row => row.status === 'omitted') === totalChapters
+      && !count(row => ['partial', 'failed', 'cancelled'].includes(row.status)) ? 'complete' : 'partial',
     prosePercent: totalChapters ? Math.round(proseChapters / totalChapters * 1000) / 10 : 0,
     blockCount: chapterDiagnostics.reduce((sum, row) => sum + row.blockCount, 0),
     needsInputChapters: count(row => row.status === 'needs_input'), omittedChapters: count(row => row.status === 'omitted'),

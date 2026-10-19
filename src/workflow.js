@@ -233,7 +233,7 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
       const requiredGaps = incomplete.filter(row => row.required && !['pending', 'draft_unverified'].includes(row.status))
         .map(row => `${row.title}：必需章节${row.status === 'partial' ? '尚未完整' : '未成稿'}，原因见逐章运行记录`)
       const hasProse = generated.sections.some(section => section.blocks?.some(block => String(block.text || '').trim()))
-      const generationFault = outcomes.some(row => row.status === 'failed')
+      const generationFault = outcomes.some(row => ['failed', 'partial'].includes(row.status))
       const reviewStatus = intermediate ? phase : ['draft', 'standard'].includes(args.quality_mode)
         ? generationFault ? hasProse ? 'partial_draft' : 'failed' : 'draft_ready'
         : generated.sections.length ? (incomplete.length ? 'partial_draft' : 'needs_human_review') : 'failed'

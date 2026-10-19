@@ -46,6 +46,7 @@ test('模型只选择原文句段；上游幻灯片与审美规则实际投影�
   assert.equal(calls[0].stage, 'presentation')
   assert.equal(calls[0].qualityMode, 'draft')
   assert.match(calls[0].task, /给客户展示/u)
+  assert.match(calls[0].task, /按章节提取内容关键信息、精简句式，再交给 xiaoma-studio/u)
   assert.ok(calls[0].skill.guidance.some(item => item.path.endsWith('slides.md') && item.text.includes('一页一个结论')))
   assert.ok(calls[0].skill.guidance.some(item => item.path.endsWith('aesthetics.md') && item.text.includes('编辑部')))
   assert.ok(calls[0].protectedUnitIds.length)
