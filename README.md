@@ -2,7 +2,7 @@
 
 独立 DSH/Cordis 插件：导入材料、同步项目知识库，按规则生成可审阅的解决方案正文。当前文案输出 Markdown/JSON，并独立导出 DOCX 和可自由翻页的演示 HTML；可手动从同版正文提炼业务/产品两张 SVG；图形编辑器、自动嵌图和 PPTX/PDF 导出尚未实现，不依赖旧插件或 HTML Anything。
 
-**当前源码为 0.11.0：新增独立的两张架构 SVG 输出入口。** 从既有文稿提炼业务/产品节点，采用 fireworks 静态引擎；设计规范从 diagram-design 抽象，独立于文字规则。保留0.10.2超时与批次恢复修复。当前3081仍安装0.10.1，本轮不安装或重启、不改正在运行的任务或模型路由。验证和安装边界见[测试记录](docs/test-record.md)，实施范围见[超时与恢复方案](docs/timeout-recovery-plan-20261019.md)。
+**当前源码为 0.11.1：HTML支持真正概括改写，MD/DOCX清理逐段引用和审核提示。** 演示可合并段落、提炼短标题/短要点，保留来源与必要条件；完整正文与出处仍可查。保留0.11.0手动两张SVG、0.10.2超时恢复。当前3081仍安装0.10.1，本轮不安装或重启、不改正在运行的任务或模型路由。验证和安装边界见[测试记录](docs/test-record.md)，实施范围见[超时与恢复方案](docs/timeout-recovery-plan-20261019.md)。
 
 全局规则已更新到 **0.11.0**，旧 `planId` 的规则指纹不再匹配：从0.8.0升级后重新 `plan → confirm → generate`，可以复用原导入材料，不必重复上传。
 
@@ -17,7 +17,7 @@
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 日常安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
 | 本机测试环境 | `http://127.0.0.1:3081/`，profile 为 `wlyd-assembly-021-browser`（历史名称）；2026-10-19 已加载0.10.1 |
-| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.11.0.tgz`；SHA-256 见 `releases/SHA256SUMS`，本轮不安装 |
+| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.11.1.tgz`；SHA-256 见 `releases/SHA256SUMS`，本轮不安装 |
 | 历史安装包 / 校验 | `releases/` / `releases/SHA256SUMS` |
 | 运行产物 | **当前 DSH 会话工作区**的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
 
@@ -61,6 +61,16 @@ rules/
 
 模板定义目录，章节角色定义取材和写法，全局规则定义共同纪律；产品事实来自用户材料和授权知识库。goodcase 只学习方法，不作为本次客户、产品能力、数字或奖项证据。`extractQuestions` 是重点线索，不是白名单。全景规则的学习依据见 [全景学习记录](docs/panorama-rule-evidence.md)。
 
+### 0.11.1 概括与干净输出
+
+- **MD/DOCX：**完整正文保留，正文不再逐段插“依据：[来源…]”、审核状态或“待确认内容”。来源、段落对应、版本与审核记录集中到“来源与审核附录”。规划、试点、第三方和需授权等实质条件仍用自然措辞保留。
+- **HTML：**从同版快照概括改写短标题和要点，可以合并、略去重复段落；不再每段必选/逐字搬运。原文和引用保留在“原文与来源”面板；不重复把同句放标题与正文。
+- 每批按原文约35%设置文案软目标，并给页数建议；单标题最多36字、要点90字、每页最多3点/200字。指标含可见条件；减量不足或主线编号未进入演示时给warning，不追加多轮自动改写。
+- 所用来源的条件/状态由程序继承；校验未知来源、新数字/英文名称、明显否定/授权反转和无关新能力。属于有限规则筛查，不能证明完整语义一致，概括仍是待审稿。
+- 新演示计划schema=2，旧版全文分页不再复用。概括失败只降级该批原文分页，保留完整文档；不假称精简成功。已存在的文件不自动覆盖，安装新版本后重新调用output即可，原run不必重组稿。
+
+详细参数、软目标与限制见[输出说明](docs/output-guide.md)。本轮未安装或重启3081。
+
 ### 0.11.0 手动两张SVG（第一批）
 
 文案完成后调用 `wlyd_assembly_output`，传 `format=diagrams, action=start`；返回独立jobId，宿主完成通知后收取。查询/取消继续传`format=diagrams`。两图共用固定文案快照，分别保存成功或失败；不重新检索或撰写全文，不改变已有MD/DOCX/HTML。
@@ -91,7 +101,7 @@ rules/
 
 文案主记录仍是`report.json`，`src/content/snapshot.js`生成稳定快照；正文/来源/章节版本/确认与复核状态组成内容哈希，视觉主题不参与。`rules/`只管取材与写法；`prompts/outputs/presentation.md`只管面向客户的关键点提取，`src/outputs/`分别管MD、DOCX和HTML，未来海报/视频复用快照。
 
-文案任务结束自动先交MD/DOCX，再启动独立HTML宿主作业。HTML按章节分批选原文关键句，程序保留来源、问题方案主线和能力条件；模型失败时原文分页并提示“未完成精简”，不编造事实，不反写原文。内嵌固定commit的xiaoma-studio引擎，支持方向键、按钮、页码、全屏和来源查看。不是完整富文本编辑器或可编辑PPTX。
+文案任务结束自动先交MD/DOCX，再启动独立HTML宿主作业。HTML按章节分批概括关键点，程序继承所用来源、主线编号和能力条件，未选主线提示复核；模型失败时原文分页并明确“未概括”，不反写原文。内嵌固定commit的xiaoma-studio引擎，支持方向键、按钮、页码、全屏和来源查看。不是完整富文本编辑器或可编辑PPTX。
 
 | 对象 | 文件 / 位置 |
 |---|---|
@@ -110,7 +120,7 @@ rules/
 
 等待使用DSH已提供的宿主完成通知和`job_output wait=true timeout_ms=60000`，不加代理轮询。`status`模型侧默认只输出摘要，支持`after_revision`；完整运行文件保留，`view=detail`显式诊断。有效已确认planId可复用，未新增仅按项目/受众猜缓存。写作与演示可分别配置`writingRoute`、`presentationRoute`（`{provider,model}`），或`WLYD_ASSEMBLY_WRITING_ROUTE`、`WLYD_ASSEMBLY_PRESENTATION_ROUTE`；未配置则跟随会话。仅新增配置能力，本轮未改DSH实际路由。
 
-新工具`wlyd_assembly_output`：`action=start/query/cancel`，`format=all/documents/html`，`theme=editorial/swiss/blueprint`，可传`expected_content_sha256`与`retry=true`。详细流程、边界和参数见[输出使用说明](docs/output-guide.md)。
+新工具`wlyd_assembly_output`：`action=start/query/cancel`，`format=all/documents/html/diagrams`，`theme=editorial/swiss/blueprint`，可传`expected_content_sha256`与`retry=true`。详细流程、边界和参数见[输出使用说明](docs/output-guide.md)。
 
 ### 0.9.0 减少模型往返，先交初稿
 
@@ -305,11 +315,11 @@ artifacts/material-knowledge-assembly/runs/<runId>/
 
 ## 5. 安装与配置
 
-Node.js 22+、DSH 和内容中台账号为前提。0.11.0安装命令如下（供下次切换使用，本轮未执行）；当前3081仍为0.10.1：
+Node.js 22+、DSH 和内容中台账号为前提。0.11.1安装命令如下（供下次切换使用，本轮未执行）；当前3081仍为0.10.1：
 
 ```bash
-shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.11.0.tgz
-dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.11.0.tgz"
+shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.11.1.tgz
+dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.11.1.tgz"
 ```
 
 校验值以 `releases/SHA256SUMS` 为准。这份包的文档是打包时快照；发布后补记的安装结果以仓库当前 README 和测试记录为准。若修改源码或文档，应升新版本再打包，避免同名包产生不同哈希。
@@ -342,7 +352,7 @@ dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-mater
 ## 6. 仍未打通与验收边界
 
 - 本版新增的是本机任务去重、检查点与显式恢复；DSH 退出不会继续后台生成。没有云端队列、远程调度或跨设备自动接续；成功章已可通过 chapter action=revise 定向修改。旧版任务没有新版检查点时需重新规划启动。
-- 当前3081仍为0.10.1；0.11.0仅源码、自动化及安装包验证，本轮未启动真实模型生成。实际成稿质量、token与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、安装与自动化结果见测试记录。
+- 当前3081仍为0.10.1；0.11.1仅源码、自动化及安装包验证，本轮未启动真实模型生成。实际成稿质量、token与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、安装与自动化结果见测试记录。
 - 知识库关联候选和本地词面选段可能漏材料；原文回读、Wiki/图谱和公开检索未接，缺少来源的政策不能冒充检索结果。
 - UTF-8 文本、Markdown、DOCX、文字 PDF、PPTX、XLSX、ZIP 支持文字提取；不保证图表、图片文字、版式完整。图片/扫描件 OCR、DMG、旧 Office、音视频、链接抓取未接。
 - 单批 100 文件、单文件 500 MB；ZIP 最多 1000 项/共 1 GB。入口限额不证明任意格式 500 MB 全链路可用，真实大文件链路待验收。

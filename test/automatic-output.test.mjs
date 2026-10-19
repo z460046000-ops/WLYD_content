@@ -18,7 +18,7 @@ test('确认规划→真实组稿落盘→先MD/DOCX→独立模型提炼→上�
         supportMode: 'sourced', sourceCardIds: [prompt.facts[0].id] }], sections: [{ key: 'scene', blocks: [{
           text: '建议销售和客服通过统一记录核对交接，具体范围待确认。', supportMode: 'candidate', factIds: ['claim'], planRefs: {} }] }] }
       else if (prompt.stage === 'consistency-review') value = completeAudit()
-      else if (prompt.stage === 'presentation') value = { slides: prompt.units.map(unit => ({ unitIds: [unit.id] })) }
+      else if (prompt.stage === 'presentation') value = { slides: [{ title: '协同线索交接', points: [{ text: '统一记录，协同销售与客服交接', sourceBlockIds: [prompt.units[0].sourceBlockId] }] }] }
       else assert.fail(`unexpected stage ${prompt.stage}`)
       yield { type: 'text-delta', text: JSON.stringify(value) }; yield { type: 'finish', reason: { kind: 'stop' } }
     } }
@@ -37,6 +37,9 @@ test('确认规划→真实组稿落盘→先MD/DOCX→独立模型提炼→上�
   const output = await delivery.query(result.runId, f.exec)
   assert.equal(output.htmlReady, true); assert.equal(output.stale, false)
   const html = await readFile(output.htmlPath, 'utf8')
+  const presentation = await readRecord(output.htmlPath.replace(/presentation\.html$/u, 'slides.json'))
+  assert.equal(presentation.schema, 2)
+  assert.equal(presentation.slides[0].mode, 'summary', '整链必须实际采用概括结果，不能仅靠原文退路通过')
   assert.match(html, /MS\.deck\(/u); assert.match(html, /presentation-prev/u)
   assert.match(html, /待用户确认/u)
   assert.match(html, /6f7b4927bf4be7f057e58269febf52200bb1f01f/u)

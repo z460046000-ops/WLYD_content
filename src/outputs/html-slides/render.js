@@ -11,7 +11,7 @@ const STYLE = `
 body{background:#101112!important;color:#f2f2ef;font-family:'PingFang SC','Microsoft YaHei',sans-serif}
 body>div:not(#stage):not(#presentation-controls){display:none!important}
 #stage{--muted:#a7aaa9;--accent:#5979ff;background:var(--bg);color:var(--fg)}
-.slide{position:absolute;inset:0;padding:88px 110px 106px;display:flex;flex-direction:column;background:var(--bg);color:var(--fg)}
+.slide{position:absolute;inset:0;padding:88px 110px 106px;display:flex;flex-direction:column;background:var(--bg);color:var(--fg);overflow-y:auto}
 .slide.light{background:var(--paper,#f2f2ef);color:var(--ink,#141516);--muted:#555b59}
 .over{display:flex;justify-content:space-between;gap:30px;align-items:center;font:500 22px/1.4 var(--font-ui);letter-spacing:.08em;color:var(--muted)}
 .chapter-title{max-width:1200px;overflow-wrap:anywhere}
@@ -60,16 +60,17 @@ dialog article{border-top:1px solid #c9cfc8;margin-top:18px;padding-top:10px}
 `
 
 function pageHtml(slide, index) {
-  const boundaries = list(slide.boundaries)
-  const mode = slide.kind === 'material-card' ? slide.status === 'failed' ? '生成故障' : '待补材料' : slide.mode === 'source-pagination' ? '原文分页 · 未精简' : '关键点演示'
-  const points = list(slide.points).filter(point => point.text !== slide.title || list(slide.points).length === 1)
+  const body = [slide.title, ...list(slide.points).map(point => point.text)].join('\n')
+  const boundaries = list(slide.caveats).filter(value => !body.includes(value))
+  const mode = slide.kind === 'material-card' ? slide.status === 'failed' ? '生成故障' : '待补材料' : slide.mode === 'source-pagination' ? '原文分页 · 未概括' : ''
+  const points = list(slide.points).filter(point => point.text !== slide.title)
   return `<section class="slide${index % 2 === 1 ? ' light' : ''}" data-slide-id="${escapeHtml(slide.id)}" data-dur="5" data-tr="push">
-  <div class="over" data-fx="fade"><span class="chapter-title">${escapeHtml(slide.sectionTitle)}</span><span class="mode-tag">${escapeHtml(mode)}</span></div>
+  <div class="over" data-fx="fade"><span class="chapter-title">${escapeHtml(slide.sectionTitle)}</span>${mode ? `<span class="mode-tag">${escapeHtml(mode)}</span>` : ''}</div>
   <h2 data-fx="rise" data-in="0.1">${escapeHtml(slide.title)}</h2>
   ${slide.kind === 'material-card' ? `<p class="empty-note" data-fx="rise" data-in="0.2">${escapeHtml(slide.reason)}</p>`
-    : `<ol class="keypoints">${points.map((point, pointIndex) => `<li data-fx="rise" data-in="${0.2 + pointIndex * 0.12}"><span class="point-number">${String(pointIndex + 1).padStart(2, '0')}</span><span>${escapeHtml(point.text)}</span></li>`).join('')}</ol>`}
+    : points.length ? `<ol class="keypoints">${points.map((point, pointIndex) => `<li data-fx="rise" data-in="${0.2 + pointIndex * 0.12}"><span class="point-number">${String(pointIndex + 1).padStart(2, '0')}</span><span>${escapeHtml(point.text)}</span></li>`).join('')}</ol>` : ''}
   ${boundaries.length ? `<div class="boundary">${boundaries.map(label => `<span>${escapeHtml(label)}</span>`).join('')}</div>` : ''}
-  <p class="trace">${slide.continuation ? '原文续页：同一段落的适用条件仍然有效 · ' : ''}${slide.kind === 'material-card' ? '材料卡不计为已完成正文' : '来源与原文可在下方查看'}${list(slide.sourceConditions).length ? ' · 含适用条件，请同时查看原文' : ''}</p>
+  ${slide.kind === 'material-card' ? '<p class="trace">材料卡不计为已完成正文</p>' : ''}
 </section>`
 }
 
@@ -152,11 +153,11 @@ export async function renderPresentation(plan, { theme = 'editorial' } = {}) {
 <title>${escapeHtml(plan.title)}</title><style>${base}\n${tokens}\n${STYLE}</style></head>
 <body><div id="stage" class="theme-${selectedTheme}" aria-label="解决方案演示">
 ${plan.slides.map(pageHtml).join('\n')}
-<div class="foot"><span class="foot-title">${escapeHtml(plan.title)} · ${escapeHtml(reviewLabel)}</span><span id="deck-num"></span></div><div id="deck-progress"></div></div>
+<div class="foot"><span class="foot-title">${escapeHtml(plan.title)}</span><span id="deck-num"></span></div><div id="deck-progress"></div></div>
 <div id="presentation-controls" role="navigation" aria-label="幻灯片翻页">
 <button type="button" id="presentation-prev" aria-label="上一页">← 上一页</button><span id="presentation-position" aria-live="polite"></span>
 <button type="button" id="presentation-next" aria-label="下一页">下一页 →</button><button type="button" id="presentation-source-open">原文与来源</button><button type="button" id="presentation-fullscreen">全屏</button><span class="keyboard-hint">← → 翻页 · F 全屏</span></div>
-<dialog id="presentation-sources"><button type="button" id="presentation-source-close">关闭</button><h2>本页原文与来源</h2><p class="metadata">演示只选择原文关键句。完整措辞、适用条件与审核身份以本文及已交付文档为准。</p>${sourceHtml(plan)}
+<dialog id="presentation-sources"><button type="button" id="presentation-source-close">关闭</button><h2>本页原文与来源</h2><p class="metadata">${escapeHtml(reviewLabel)}。演示概括文案，原段落、来源和审核信息在此保留；能力条件不因概括而改变。</p>${sourceHtml(plan)}
 ${list(plan.warnings).length ? `<h3>输出说明</h3><p class="metadata">${escapeHtml(plan.warnings.join('\n'))}</p>` : ''}</dialog>
 <script>${trustedScript(runtime)}</script><script>${trustedScript(deck)}</script><script>${controls}</script>
 </body></html>`

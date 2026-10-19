@@ -1,3 +1,5 @@
+import { displayBlockText } from './display.js'
+
 const list = value => Array.isArray(value) ? value : []
 const text = value => value === undefined || value === null ? '' : String(value)
 const unique = values => [...new Set(values.filter(Boolean))]
@@ -13,7 +15,7 @@ const ownerLabels = { self: '自有能力', 'third-party': '第三方能力', cu
 
 function blockLabels(block) {
   return unique([
-    block.supportMode === 'candidate' ? '待确认内容' : '',
+    block.supportMode === 'candidate' ? '候选方案' : '',
     block.verification === 'unverified' ? '未验证' : '',
     block.capabilityStatus && `能力状态：${stateLabels[block.capabilityStatus] || text(block.capabilityStatus)}`,
     block.capabilityOwnership && `能力归属：${ownerLabels[block.capabilityOwnership] || text(block.capabilityOwnership)}`,
@@ -21,7 +23,7 @@ function blockLabels(block) {
   ])
 }
 
-/** One deterministic, format-neutral view keeps MD and DOCX aligned without rewriting any prose. */
+/** Full prose stays in the body; provenance and review details share one appendix in MD/DOCX. */
 export function documentView(snapshot) {
   if (!snapshot || snapshot.schemaVersion !== 1 || !text(snapshot.title).trim() || !Array.isArray(snapshot.outline) || !Array.isArray(snapshot.sections)) {
     throw new Error('输出需要 schemaVersion=1 的完整文案快照')
@@ -50,9 +52,10 @@ export function documentView(snapshot) {
       if (!node?.key || seen.has(node.key)) throw new Error('文案快照目录含无效或重复章节')
       seen.add(node.key)
       const section = byKey.get(node.key) || { key: node.key, title: node.title, status: 'pending', blocks: [] }
-      const blocks = list(section.blocks).map(block => {
+      const blocks = list(section.blocks).map((block, index) => {
         if (!block || typeof block.text !== 'string') throw new Error(`章节 ${node.key} 含无效正文段落`)
-        return { ...block, labels: blockLabels(block), sourceIndices: unique(list(block.evidence).map(sourceIndex)) }
+        return { ...block, id: block.id || `${node.key}-${index + 1}`, position: index + 1,
+          displayText: displayBlockText(block), labels: blockLabels(block), sourceIndices: unique(list(block.evidence).map(sourceIndex)) }
       })
       const hasBody = blocks.some(block => block.text.trim())
       const status = section.status || (hasBody ? 'draft_unverified' : section.inputNeeded ? 'needs_input' : 'pending')
@@ -76,33 +79,45 @@ export function documentView(snapshot) {
       : review.status === 'cancelled' ? '关联复核已停止'
         : review.status === 'failed' ? '关联复核未完成'
           : review.passed === false ? '关联复核存在待处理事项' : '关联复核状态待确认'
-  return { title: headingText(snapshot.title), sections, sources,
+  return { title: headingText(snapshot.title), sections, sources, sourceContentSha256: text(snapshot.sourceContentSha256),
+    assemblyReview: structuredClone(review),
     notes: [`正文覆盖：${bodyCount}/${sections.length} 章；待补材料：${materialCount} 章；生成故障：${failureCount} 章；其他未生成：${pendingCount} 章。`,
-      reviewLabel + '。', '本文件保留文案的待审、待确认及能力边界标记。材料卡不代表已完成正文。'] }
+      reviewLabel + '。', '来源、段落对应关系与审核记录列于本附录；材料卡不代表已完成正文。'] }
 }
 
 export function renderMarkdown(snapshot) {
   const view = documentView(snapshot)
-  const lines = [`# ${escaped(view.title)}`, '', ...view.notes.flatMap(note => [`> ${note}`, ''])]
+  const lines = [`# ${escaped(view.title)}`, '']
   for (const section of view.sections) {
     lines.push(`${'#'.repeat(Math.min(section.depth + 1, 6))} ${escaped(section.title)}`, '')
-    lines.push(`> ${section.statusLabel}；${section.approvalLabel}${section.version === undefined ? '' : `；章节版本 ${section.version}`}。`, '')
     if (section.inputNeeded) {
       lines.push(`**${section.inputLabel}**：${text(section.inputNeeded.reason) || '尚缺本章资料'}`, '')
       for (const question of list(section.inputNeeded.questions)) lines.push(`- ${text(question)}`)
       if (list(section.inputNeeded.questions).length) lines.push('')
       if (section.inputNeeded.nextAction) lines.push(text(section.inputNeeded.nextAction), '')
     }
+    if (!section.hasBody && !section.inputNeeded) lines.push(`${section.statusLabel}。`, '')
+    for (const block of section.blocks) if (block.displayText) lines.push(block.displayText, '')
+  }
+  lines.push('## 来源与审核附录', '', ...view.notes.flatMap(note => [note, '']))
+  if (view.sourceContentSha256) lines.push(`文案版本指纹：${escaped(view.sourceContentSha256)}`, '')
+  if (Object.keys(view.assemblyReview).length) lines.push(`关联复核记录：${escaped(JSON.stringify(view.assemblyReview))}`, '')
+  lines.push('### 章节与段落记录', '')
+  for (const section of view.sections) {
+    lines.push(`#### ${escaped(section.title)}`, '', `${section.statusLabel}；${section.approvalLabel}${section.version === undefined ? '' : `；章节版本 ${section.version}`}。`, '')
     for (const block of section.blocks) {
-      if (block.labels.length) lines.push(`> ${block.labels.join('；')}。`, '')
-      lines.push(block.text, '')
-      if (block.sourceIndices.length) lines.push(`依据：${block.sourceIndices.map(index => `[来源 ${index}]`).join('、')}`, '')
+      lines.push(`段落 ${escaped(block.id)}（第 ${block.position} 段）`, '')
+      if (block.sourceIndices.length) lines.push(`来源：${block.sourceIndices.map(index => `来源 ${index}`).join('、')}`, '')
+      if (block.labels.length) lines.push(`审核信息：${block.labels.join('；')}。`, '')
+      for (const [label, values] of [['复核记录', block.reviewItems], ['引用提醒', block.referenceWarnings]]) {
+        for (const value of list(values)) lines.push(`${label}：${escaped(typeof value === 'string' ? value : JSON.stringify(value))}`, '')
+      }
     }
   }
   if (view.sources.length) {
-    lines.push('## 来源附录', '')
+    lines.push('### 来源记录', '')
     for (const source of view.sources) {
-      lines.push(`### 来源 ${source.index}`, '', `原始来源 ID：${escaped(source.id)}`, '')
+      lines.push(`#### 来源 ${source.index}`, '', `原始来源 ID：${escaped(source.id)}`, '')
       if (source.title) lines.push(`资料：${escaped(source.title)}`, '')
       if (source.locator) lines.push(`位置：${escaped(source.locator)}`, '')
       if (source.url) lines.push(`链接：${escaped(source.url)}`, '')

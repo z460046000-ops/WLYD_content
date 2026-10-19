@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import { cleanDisplayText, displayIdentity } from '../display.js'
+import { presentationCaveats, validateSummaryText } from './summary-policy.js'
 
 const list = value => Array.isArray(value) ? value : []
 const strings = value => list(value).filter(item => typeof item === 'string')
@@ -8,34 +10,46 @@ const stable = value => Array.isArray(value) ? value.map(stable) : value && type
   ? Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stable(item)])) : value
 const equals = (first, second) => JSON.stringify(stable(first)) === JSON.stringify(stable(second))
 const conditions = value => typeof value === 'string' ? [value] : strings(value)
-const PROTECTED = /不|未|待|仅|只|若|如|条件|前提|依赖|需要|须|试点|规划|拟|计划|建议|候选|第三方|客户已有/u
+const length = value => [...String(value || '')].length
 
-/** The source adapter is shared by planning and cache validation, including negative/conditional prose. */
+/** Clean only display artifacts. Raw paragraphs and all provenance stay in presentationSource. */
 export function presentationUnits(section, block, blockIndex) {
-  const body = typeof block.text === 'string' ? block.text.trim() : ''
+  const body = cleanDisplayText(typeof block.text === 'string' ? block.text : '').trim()
   const id = typeof block.id === 'string' && block.id ? block.id : `${section.key}-${blockIndex + 1}`
   const sentences = body.match(/[^。！？\n]+[。！？]?|[。！？]/gu) || []
   let position = 0
   return sentences.flatMap(sentence => {
     const original = sentence.trim()
     if (!original) return []
-    const codepoints = [...original], result = []
-    for (let start = 0; start < codepoints.length; start += 180) {
-      const value = codepoints.slice(start, start + 180).join('')
+    const chars = [...original], result = []
+    // Balance long sentences rather than creating a final one-character punctuation card.
+    const chunks = Math.ceil(chars.length / 180), size = Math.ceil(chars.length / chunks)
+    for (let start = 0; start < chars.length; start += size) {
+      const value = chars.slice(start, start + size).join('')
       const key = `${section.key}\0${id}\0${position++}\0${value}`
       result.push({ id: `u-${createHash('sha256').update(key).digest('hex').slice(0, 20)}`,
-        text: value, sourceBlockId: id, sectionKey: section.key,
-        continuation: codepoints.length > 180, protected: PROTECTED.test(original) || codepoints.length > 180 })
+        text: value, sourceBlockId: id, sectionKey: section.key, continuation: chunks > 1 })
     }
     return result
   })
 }
 
+export function presentationBatches(units) {
+  const batches = []; let current = [], size = 0
+  for (const unit of units) {
+    if (current.length && size + unit.text.length > 6000) { batches.push(current); current = []; size = 0 }
+    current.push(unit); size += unit.text.length
+  }
+  if (current.length) batches.push(current)
+  return batches
+}
+
 export function presentationSource(section, block, blockIndex) {
+  const identity = displayIdentity(block)
   const boundaries = []
   if (section.approvalStatus !== 'approved') boundaries.push('待用户确认')
-  if (block.supportMode === 'candidate' || block.verification === 'candidate') boundaries.push('候选方案')
-  if (block.verification === 'unverified') boundaries.push('来源待核验')
+  if (identity.candidate) boundaries.push('候选方案')
+  if (identity.unverified) boundaries.push('来源待核验')
   const status = { pilot: '试点中', planned: '规划中', proposed: '建议方案', unknown: '能力状态待确认' }[block.capabilityStatus]
   const owner = { 'third-party': '第三方能力', customer: '客户已有能力', unknown: '能力归属待确认' }[block.capabilityOwnership]
   if (status) boundaries.push(status)
@@ -45,90 +59,110 @@ export function presentationSource(section, block, blockIndex) {
     evidence: structuredClone(list(block.evidence)), planRefs: structuredClone(block.planRefs || {}), boundaries: unique(boundaries),
     conditions: unique([...conditions(block.conditions), ...conditions(block.limitations)]),
     capabilityStatus: block.capabilityStatus, capabilityOwnership: block.capabilityOwnership,
-    supportMode: block.supportMode, verification: block.verification,
+    supportMode: identity.candidate ? 'candidate' : block.supportMode,
+    verification: identity.unverified ? 'unverified' : block.verification,
+    isHypothesis: Boolean(block.isHypothesis),
     chapterVersion: section.version, approvalStatus: section.approvalStatus }
 }
 
-/** The output may select and paginate source prose; it cannot supply new prose or downgrade its labels. */
-export function validatePresentation(plan, snapshot) {
+/** Provenance, explicit restrictions and obvious new claims are checked; rewriting semantics still need review. */
+function inspectPresentation(plan, snapshot, { scope } = {}) {
   const issues = []
+  if (plan?.schema !== 2) issues.push('旧版演示计划须重新概括，不能复用')
+  if (plan?.semanticStatus !== 'draft_unverified') issues.push('概括的待审身份缺失或被提升')
   if (plan?.sourceContentSha256 !== snapshot?.sourceContentSha256) issues.push('源文案指纹不一致')
   if (plan?.title !== (snapshot?.title || '解决方案') || plan?.runId !== snapshot?.runId) issues.push('源文案标题或运行编号不一致')
   const expectedVersions = list(snapshot?.sections).map(section => ({ key: section.key, version: section.version, approvalStatus: section.approvalStatus }))
   if (!equals(plan?.sourceVersions, expectedVersions)) issues.push('源章节版本或确认状态不一致')
   if (!equals(plan?.assemblyReview, snapshot?.assemblyReview || { status: 'pending', passed: false })) issues.push('关联复核状态不一致')
   const sections = new Map(list(snapshot?.sections).map(section => [section.key, section]))
-  const originals = new Map(list(snapshot?.sections).flatMap(section => list(section.blocks).map((block, index) => [
-    sourceKey(section.key, block.id || `${section.key}-${index + 1}`), block,
-  ])))
-  const archived = new Map(list(plan?.sources).map(source => [sourceKey(source.sectionKey, source.id), source]))
-  const expectedSources = new Map(list(snapshot?.sections).flatMap(section => list(section.blocks).flatMap((block, index) =>
-    typeof block.text === 'string' && block.text.trim() ? [[sourceKey(section.key, block.id || `${section.key}-${index + 1}`), presentationSource(section, block, index)]] : [])))
-  if (archived.size !== expectedSources.size || archived.size !== list(plan?.sources).length) issues.push('原文来源记录缺失或重复')
-  for (const [key, expected] of expectedSources) {
-    const actual = archived.get(key)
-    if (!actual || !equals(Object.fromEntries(Object.keys(expected).map(field => [field, actual[field]])), expected)) issues.push('原文来源元数据或审核身份被改写')
+  const expectedSources = new Map(), expectedBatches = new Map()
+  for (const section of sections.values()) {
+    const units = []
+    for (const [index, block] of list(section.blocks).entries()) if (typeof block.text === 'string' && block.text.trim()) {
+      const source = presentationSource(section, block, index)
+      expectedSources.set(sourceKey(section.key, source.id), source)
+      units.push(...presentationUnits(section, block, index))
+    }
+    presentationBatches(units).forEach((batch, index) => expectedBatches.set(sourceKey(section.key, index + 1), batch))
   }
-  const expectedUnits = new Map(list(snapshot?.sections).flatMap(section => list(section.blocks).map((block, index) =>
-    [sourceKey(section.key, block.id || `${section.key}-${index + 1}`), presentationUnits(section, block, index)])))
-  const covered = new Set(), selectedUnitTexts = new Map(), seen = new Set()
+  const archived = new Map(list(plan?.sources).map(source => [sourceKey(source.sectionKey, source.id), source]))
+  if (archived.size !== expectedSources.size || archived.size !== list(plan?.sources).length) issues.push('原文来源记录缺失或重复')
+  for (const [key, expected] of expectedSources) if (!equals(archived.get(key), expected)) issues.push('原文来源元数据或审核身份被改写')
+  const selectedScope = key => !scope || key === sourceKey(scope.sectionKey, scope.batch)
+  const rows = list(plan?.batches), batchRows = new Map(rows.map(row => [sourceKey(row.sectionKey, row.batch), row]))
+  if (batchRows.size !== rows.length || rows.some(row => !expectedBatches.has(sourceKey(row.sectionKey, row.batch)))) issues.push('演示批次缺失、未知或重复')
+  for (const [key, units] of expectedBatches) if (selectedScope(key)) {
+    const row = batchRows.get(key)
+    if (!row || !equals(row.sourceUnitIds, units.map(unit => unit.id))) issues.push('演示输入批次不完整或被改写')
+  }
+  const seen = new Set(), pageBatches = new Map(), visibleSections = new Set()
   for (const slide of list(plan?.slides)) {
-    if (!slide?.id || seen.has(slide.id)) issues.push('页面 ID 缺失或重复')
+    if (!slide?.id || seen.has(slide.id)) issues.push('页面ID缺失或重复')
     seen.add(slide?.id)
     const section = sections.get(slide?.sectionKey)
     if (!section) { issues.push('页面引用未知章节'); continue }
+    visibleSections.add(section.key)
     if (slide.sectionTitle !== section.title) issues.push('页面章节标题与原文不一致')
     if (slide.kind === 'material-card') {
-      if (list(section.blocks).some(block => String(block.text || '').trim())) issues.push('有正文的章节不能替换为材料卡')
+      if (list(section.blocks).some(block => cleanDisplayText(block.text || '').trim())) issues.push('有正文的章节不能替换为材料卡')
       const label = section.status === 'failed' ? '生成故障' : '待补材料'
-      if (slide.status !== section.status || !list(slide.boundaries).includes(label)) issues.push('无正文页的故障或缺料标记不一致')
+      if (slide.status !== section.status || !list(slide.boundaries).includes(label)) issues.push('故障或缺料标记不一致')
       if (slide.reason !== (section.inputNeeded?.reason || '本章暂无正文，待补充或重新生成')) issues.push('材料卡原因被改写')
       continue
     }
-    if (slide.kind !== 'content' || !list(slide.points).length || list(slide.points).length > 3) issues.push('正文页面必须有一至三个要点')
-    if (list(slide.points).reduce((sum, point) => sum + [...String(point.text || '')].length, 0) > 300) issues.push('页面文案过多，需要拆页')
-    const sourceIds = new Set(strings(slide.sourceBlockIds))
+    const key = sourceKey(section.key, slide.batch), units = expectedBatches.get(key) || []
+    if (!units.length || !batchRows.has(key)) issues.push('页面引用未知输入批次')
+    if (!pageBatches.has(key)) pageBatches.set(key, [])
+    pageBatches.get(key).push(slide)
+    const isSummary = slide.mode === 'summary'
+    if (!['summary', 'source-pagination'].includes(slide.mode)) issues.push('未知演示模式')
+    if (slide.kind !== 'content' || !list(slide.points).length || list(slide.points).length > 3) issues.push('页面必须有一至三个要点')
+    if (list(slide.points).reduce((sum, point) => sum + length(point.text), 0) > (isSummary ? 200 : 300)) issues.push('页面文案过多')
+    if (!slide.title || isSummary && length(slide.title) > 36 || !isSummary && slide.title !== section.title) issues.push('页面标题无效')
     const pointSources = unique(list(slide.points).flatMap(point => strings(point.sourceBlockIds)))
-    if (pointSources.length !== sourceIds.size || pointSources.some(id => !sourceIds.has(id))) issues.push('页面来源与要点来源不一致')
-    const selectedSources = [...sourceIds].map(id => expectedSources.get(sourceKey(slide.sectionKey, id))).filter(Boolean)
+    if (!equals(slide.sourceBlockIds, pointSources)) issues.push('页面来源与要点来源不一致')
+    const selectedSources = pointSources.map(id => expectedSources.get(sourceKey(section.key, id))).filter(Boolean)
     const expectedRefs = {}
     for (const source of selectedSources) for (const [field, ids] of Object.entries(source.planRefs)) {
       if (Array.isArray(ids)) expectedRefs[field] = unique([...(expectedRefs[field] || []), ...strings(ids)])
     }
     if (!equals(slide.planRefs, expectedRefs)) issues.push('主线关联丢失或引入未知关联')
+    if (!equals(slide.boundaries, unique(selectedSources.flatMap(source => source.boundaries)))) issues.push('能力与审核身份被改写')
     if (!equals(slide.sourceConditions, unique(selectedSources.flatMap(source => source.conditions)))) issues.push('适用条件丢失或被改写')
-    if (!equals(slide.boundaries, unique(selectedSources.flatMap(source => source.boundaries)))) issues.push('能力与审核标记被改写')
-    for (const id of sourceIds) {
-      const key = sourceKey(slide.sectionKey, id), original = originals.get(key), source = archived.get(key)
-      if (!original || !source || source.text !== original.text) { issues.push('页面源段缺失或被改写'); continue }
-      covered.add(key)
-      if (section.approvalStatus !== 'approved' && !list(slide.boundaries).includes('待用户确认')) issues.push('丢失待用户确认标记')
-      if ((original.supportMode === 'candidate' || original.verification === 'candidate') && !list(slide.boundaries).includes('候选方案')) issues.push('丢失候选方案标记')
-      if (original.verification === 'unverified' && !list(slide.boundaries).includes('来源待核验')) issues.push('丢失未核验标记')
-      const expected = {
-        pilot: '试点中', planned: '规划中', proposed: '建议方案', unknown: '能力状态待确认',
-      }[original.capabilityStatus]
-      if (expected && !list(slide.boundaries).includes(expected)) issues.push('能力状态被提升或丢失')
-      const owner = { 'third-party': '第三方能力', customer: '客户已有能力', unknown: '能力归属待确认' }[original.capabilityOwnership]
-      if (owner && !list(slide.boundaries).includes(owner)) issues.push('能力归属被改写或丢失')
-      for (const [field, ids] of Object.entries(original.planRefs || {})) {
-        if (strings(ids).some(id => !strings(slide.planRefs?.[field]).includes(id))) issues.push('主线关联丢失')
+    if (!equals(slide.caveats, unique(selectedSources.flatMap(presentationCaveats)))) issues.push('实质条件或能力限定丢失')
+    if (isSummary) issues.push(...validateSummaryText(slide.title, selectedSources))
+    const pointTexts = new Set()
+    for (const point of list(slide.points)) {
+      const refs = strings(point.sourceBlockIds), known = new Set(units.map(unit => unit.sourceBlockId))
+      if (!refs.length || refs.length !== list(point.sourceBlockIds).length || new Set(refs).size !== refs.length || refs.some(id => !known.has(id))) issues.push('要点缺少有效的本章本批来源')
+      if (!point.text || cleanDisplayText(point.text) !== point.text || isSummary && pointTexts.has(point.text)) issues.push('要点为空、重复或含机械标签')
+      pointTexts.add(point.text)
+      if (isSummary) {
+        if (length(point.text) > 90) issues.push('要点未精简为短句')
+        issues.push(...validateSummaryText(point.text, refs.map(id => expectedSources.get(sourceKey(section.key, id))).filter(Boolean)))
+      } else {
+        if (refs.length !== 1 || !equals(point.unitIds, units.filter(unit => unit.sourceBlockId === refs[0] && unit.text === point.text && unit.continuation === point.continuation).map(unit => unit.id).filter(id => list(point.unitIds).includes(id)))
+          || list(point.unitIds).length !== 1) issues.push('原文分页要点不是完整原文句段')
       }
     }
-    for (const point of list(slide.points)) {
-      const refs = strings(point.sourceBlockIds)
-      if (refs.length !== 1 || !point.text || !refs.every(id => sourceIds.has(id))) { issues.push('演示要点没有来源映射'); continue }
-      const key = sourceKey(slide.sectionKey, refs[0]), units = expectedUnits.get(key) || []
-      if (!units.some(unit => unit.text === point.text && !!point.continuation === unit.continuation)) issues.push('演示要点不是完整原文句段')
-      if (!selectedUnitTexts.has(key)) selectedUnitTexts.set(key, new Set())
-      selectedUnitTexts.get(key).add(point.text)
-    }
-    if (slide.title !== section.title && !list(slide.points).some(point => point.text === slide.title)) issues.push('页面标题引入新文案')
   }
-  for (const [key, block] of originals) if (String(block.text || '').trim() && !covered.has(key)) issues.push('原文段落未映射到演示')
-  for (const [key, units] of expectedUnits) if (units.some(unit => unit.protected && !selectedUnitTexts.get(key)?.has(unit.text))) issues.push('原文条件或能力边界被遗漏')
+  for (const [key, units] of expectedBatches) if (selectedScope(key)) {
+    const pages = pageBatches.get(key) || [], row = batchRows.get(key)
+    if (!pages.length || row?.pages !== pages.length || pages.some(page => page.mode !== row?.mode)) issues.push('演示页面或模式与批次记录不一致')
+    if (row?.mode === 'source-pagination') {
+      const ids = pages.flatMap(page => list(page.points).flatMap(point => list(point.unitIds)))
+      if (!equals(ids, units.map(unit => unit.id))) issues.push('原文分页遗漏或改乱句段')
+    }
+  }
+  if (!scope) for (const section of sections.values()) if (!visibleSections.has(section.key)) issues.push('章节未映射到演示')
   if (!list(plan?.slides).length) issues.push('没有演示页面')
   return [...new Set(issues)]
+}
+
+export function validatePresentation(plan, snapshot, options) {
+  try { return inspectPresentation(plan, snapshot, options) }
+  catch { return ['演示计划结构无效，请重新生成输出'] }
 }
 
 /** Quick structural checks complement browser layout checks; they do not claim visual acceptance. */

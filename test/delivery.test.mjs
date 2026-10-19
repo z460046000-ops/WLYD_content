@@ -234,7 +234,7 @@ test('retry explicitly rebuilds a degraded slide plan while normal reuse and the
     return buildPresentation({ snapshot, request: async ({ units }) => {
       selections++
       if (selections === 1) throw new Error('模拟首次演示精简超时')
-      return { slides: units.map(unit => ({ unitIds: [unit.id] })) }
+      return { slides: [{ title: '统一线索记录', points: [{ text: '销售和客服共享线索记录', sourceBlockIds: [units[0].sourceBlockId] }] }] }
     } })
   }, render: localRender })
   t.after(() => delivery.close())
@@ -258,7 +258,7 @@ test('retry explicitly rebuilds a degraded slide plan while normal reuse and the
   assert.notEqual(retry.exportId, themed.exportId)
   assert.equal(retriedManifest.reusedPresentation, undefined)
   assert.equal(builds, 2); assert.equal(selections, 2)
-  assert.equal(retriedPlan.slides[0].mode, 'extractive-selection')
+  assert.equal(retriedPlan.slides[0].mode, 'summary')
   assert.deepEqual(retriedPlan.warnings, [])
   assert.equal(await readFile(path.join(f.dir, 'report.json'), 'utf8'), f.originalReport)
   assert.equal(await readFile(firstManifest.html.planPath, 'utf8'), JSON.stringify(firstPlan, null, 2))

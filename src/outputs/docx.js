@@ -34,25 +34,37 @@ export async function renderDocx(snapshot, options = {}) {
   const headingFont = font(fontName(options.fonts?.heading, 'Source Han Sans SC'))
   const view = documentView(snapshot)
   const children = [paragraph(view.title, { heading: HeadingLevel.TITLE, keepNext: true, keepLines: true })]
-  children.push(...view.notes.map(note => paragraph(note)))
   for (const section of view.sections) {
     children.push(heading(section.title, section.depth))
-    children.push(paragraph(`${section.statusLabel}；${section.approvalLabel}${section.version === undefined ? '' : `；章节版本 ${section.version}`}。`))
     if (section.inputNeeded) {
       children.push(paragraph(`${section.inputLabel}：${section.inputNeeded.reason || '尚缺本章资料'}`, { bold: true }))
       for (const question of section.inputNeeded.questions || []) children.push(paragraph(String(question), { bullet: { level: 0 } }))
       if (section.inputNeeded.nextAction) children.push(paragraph(section.inputNeeded.nextAction))
     }
+    if (!section.hasBody && !section.inputNeeded) children.push(paragraph(`${section.statusLabel}。`))
+    for (const block of section.blocks) if (block.displayText) children.push(paragraph(block.displayText))
+  }
+  children.push(heading('来源与审核附录', 1, { pageBreakBefore: true }))
+  children.push(...view.notes.map(note => paragraph(note)))
+  if (view.sourceContentSha256) children.push(paragraph(`文案版本指纹：${view.sourceContentSha256}`))
+  if (Object.keys(view.assemblyReview).length) children.push(paragraph(`关联复核记录：${JSON.stringify(view.assemblyReview)}`))
+  children.push(heading('章节与段落记录', 2))
+  for (const section of view.sections) {
+    children.push(heading(section.title, 3))
+    children.push(paragraph(`${section.statusLabel}；${section.approvalLabel}${section.version === undefined ? '' : `；章节版本 ${section.version}`}。`))
     for (const block of section.blocks) {
-      if (block.labels.length) children.push(paragraph(block.labels.join('；') + '。', { keepNext: true }))
-      children.push(paragraph(block.text))
-      if (block.sourceIndices.length) children.push(paragraph(`依据：${block.sourceIndices.map(index => `[来源 ${index}]`).join('、')}`))
+      children.push(paragraph(`段落 ${block.id}（第 ${block.position} 段）`))
+      if (block.sourceIndices.length) children.push(paragraph(`来源：${block.sourceIndices.map(index => `来源 ${index}`).join('、')}`))
+      if (block.labels.length) children.push(paragraph(`审核信息：${block.labels.join('；')}。`))
+      for (const [label, values] of [['复核记录', block.reviewItems], ['引用提醒', block.referenceWarnings]]) {
+        for (const value of Array.isArray(values) ? values : []) children.push(paragraph(`${label}：${typeof value === 'string' ? value : JSON.stringify(value)}`))
+      }
     }
   }
   if (view.sources.length) {
-    children.push(heading('来源附录', 1, { pageBreakBefore: true }))
+    children.push(heading('来源记录', 2))
     for (const source of view.sources) {
-      children.push(heading(`来源 ${source.index}`, 2))
+      children.push(heading(`来源 ${source.index}`, 3))
       children.push(paragraph(`原始来源 ID：${source.id}`))
       if (source.title) children.push(paragraph(`资料：${source.title}`))
       if (source.locator) children.push(paragraph(`位置：${source.locator}`))
