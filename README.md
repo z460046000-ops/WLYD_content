@@ -1,8 +1,8 @@
 # DSH 材料与知识组装插件
 
-独立 DSH/Cordis 插件：导入材料、同步项目知识库，按规则生成可审阅的解决方案正文。当前文案输出 Markdown/JSON，并独立导出 DOCX 和可自由翻页的演示 HTML；图形编辑器、架构图绘制、PPTX/PDF 导出尚未实现，不依赖旧插件或 HTML Anything。
+独立 DSH/Cordis 插件：导入材料、同步项目知识库，按规则生成可审阅的解决方案正文。当前文案输出 Markdown/JSON，并独立导出 DOCX 和可自由翻页的演示 HTML；可手动从同版正文提炼业务/产品两张 SVG；图形编辑器、自动嵌图和 PPTX/PDF 导出尚未实现，不依赖旧插件或 HTML Anything。
 
-**当前源码为 0.10.2：修复草稿超时被硬编码覆盖，保存中断事实/正文，按检查点只重试未完成批次。** 同时补充“按章节提取关键信息、精简句式，再交 xiaoma-studio 生成 HTML”的输出提示词。当前3081仍安装0.10.1，本轮不安装或重启、不改正在运行的任务或模型路由。验证和安装边界见[测试记录](docs/test-record.md)，实施范围见[超时与恢复方案](docs/timeout-recovery-plan-20261019.md)。
+**当前源码为 0.11.0：新增独立的两张架构 SVG 输出入口。** 从既有文稿提炼业务/产品节点，采用 fireworks 静态引擎；设计规范从 diagram-design 抽象，独立于文字规则。保留0.10.2超时与批次恢复修复。当前3081仍安装0.10.1，本轮不安装或重启、不改正在运行的任务或模型路由。验证和安装边界见[测试记录](docs/test-record.md)，实施范围见[超时与恢复方案](docs/timeout-recovery-plan-20261019.md)。
 
 全局规则已更新到 **0.11.0**，旧 `planId` 的规则指纹不再匹配：从0.8.0升级后重新 `plan → confirm → generate`，可以复用原导入材料，不必重复上传。
 
@@ -17,7 +17,7 @@
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 日常安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
 | 本机测试环境 | `http://127.0.0.1:3081/`，profile 为 `wlyd-assembly-021-browser`（历史名称）；2026-10-19 已加载0.10.1 |
-| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.10.2.tgz`；SHA-256 见 `releases/SHA256SUMS`，本轮不安装 |
+| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.11.0.tgz`；SHA-256 见 `releases/SHA256SUMS`，本轮不安装 |
 | 历史安装包 / 校验 | `releases/` / `releases/SHA256SUMS` |
 | 运行产物 | **当前 DSH 会话工作区**的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
 
@@ -61,6 +61,14 @@ rules/
 
 模板定义目录，章节角色定义取材和写法，全局规则定义共同纪律；产品事实来自用户材料和授权知识库。goodcase 只学习方法，不作为本次客户、产品能力、数字或奖项证据。`extractQuestions` 是重点线索，不是白名单。全景规则的学习依据见 [全景学习记录](docs/panorama-rule-evidence.md)。
 
+### 0.11.0 手动两张SVG（第一批）
+
+文案完成后调用 `wlyd_assembly_output`，传 `format=diagrams, action=start`；返回独立jobId，宿主完成通知后收取。查询/取消继续传`format=diagrams`。两图共用固定文案快照，分别保存成功或失败；不重新检索或撰写全文，不改变已有MD/DOCX/HTML。
+
+首版生成浅色静态SVG，模型失败时转为明确标注的原文摘录视图。节点/关系保留出处，长摘录拆卡；词面能定位不代表业务已核实。缺少相关正文返回`needs_input`。需要Python3.9+，实际验证版本3.11.3；可用`diagramPython`或`WLYD_ASSEMBLY_DIAGRAM_PYTHON`指定解释器。
+
+本批手动启动，两图在同一后台作业中依次生成。**自动并行调度、HTML嵌图、单图重试属于第二批**；当前`retry=true`重做两图。使用方式和文件结构见[输出说明](docs/output-guide.md)。
+
 ### 0.10.2 超时与恢复
 
 - 草稿遵循已有阶段超时配置，缺省单次执行10分钟、排队单独30分钟；显式调用配置仍优先。记录实际界限、配置来源、首思考/正文及增量数量。延长上限不代表模型变快，也不改变模型强度。
@@ -91,6 +99,8 @@ rules/
 | 统一文案与真实正文覆盖 | `src/content/snapshot.js`、`src/content/coverage.js` |
 | 文档适配器 | `src/outputs/markdown.js`、`src/outputs/docx.js` |
 | 演示改写提示词 | `prompts/outputs/presentation.md` |
+| 两图设计规范 / 提炼与渲染 / 作业 | `prompts/outputs/diagrams.md` / `src/outputs/diagrams/` / `src/delivery/diagrams.js` |
+| SVG引擎、MIT和原件摘要 | `vendor/fireworks-tech-graph/`，静态运行子集，固定`31fea364eda5f1852b1175f3d9e29ea31d22dcb4` |
 | 演示规划 / 固定HTML渲染 / 内容映射校验 | `src/outputs/html-slides/` |
 | 上游skill、引擎、MIT及文件摘要 | `vendor/xiaoma-studio/`，固定`6f7b4927bf4be7f057e58269febf52200bb1f01f` |
 | 交付任务、版本与过期检查 | `src/delivery/`，运行目录下`delivery.json`和`outputs/<exportId>/` |
@@ -249,7 +259,7 @@ draft/standard的`draft-checkpoint.json`按确认规划、规则、材料和模�
 
 看过大纲后回复“我确认这个大纲和主线，请确认该版本并提交一次生成”。取得 runId 后用 status 查询，勿重复 generate。升级改变规则指纹，旧规划必须重建；已有导入可复用，但须使用原工作区。
 
-检查业务全景是否讲清角色与业务流程、产品全景是否讲清功能支撑及边界、后文重点场景能否在两图内容中定位，以及已具备/规划/第三方能力是否区分。成稿看 report.md，内部问题看 review.md，逐章检索过程看 chapters/<key>/retrieval.json。partial_draft 或必需章未完成不算完整通过。当前验收的是文字底稿，尚无实际架构图绘制。
+检查业务全景是否讲清角色与业务流程、产品全景是否讲清功能支撑及边界、后文重点场景能否在两图内容中定位，以及已具备/规划/第三方能力是否区分。成稿看 report.md，内部问题看 review.md，逐章检索过程看 chapters/<key>/retrieval.json。partial_draft 或必需章未完成不算完整通过。默认生成仍交文字底稿；0.11.0另有手动两图输出，图片的业务语义与观感须另验收。
 
 ### 章节迭代提示词
 
@@ -295,11 +305,11 @@ artifacts/material-knowledge-assembly/runs/<runId>/
 
 ## 5. 安装与配置
 
-Node.js 22+、DSH 和内容中台账号为前提。0.10.2安装命令如下（供下次切换使用，本轮未执行）；当前3081仍为0.10.1：
+Node.js 22+、DSH 和内容中台账号为前提。0.11.0安装命令如下（供下次切换使用，本轮未执行）；当前3081仍为0.10.1：
 
 ```bash
-shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.10.2.tgz
-dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.10.2.tgz"
+shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.11.0.tgz
+dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.11.0.tgz"
 ```
 
 校验值以 `releases/SHA256SUMS` 为准。这份包的文档是打包时快照；发布后补记的安装结果以仓库当前 README 和测试记录为准。若修改源码或文档，应升新版本再打包，避免同名包产生不同哈希。
@@ -327,17 +337,17 @@ dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-mater
 | `WLYD_ASSEMBLY_QUEUE_TIMEOUT_MS` | 1800000，可设 60000–1800000 |
 | `WLYD_ASSEMBLY_STAGE_TIMEOUT_MS` | 按阶段 JSON，默认 600000，可设 60000–1800000 |
 
-阶段名：`plan`、`extract`、`write`、`panorama-enrichment`、`consistency-review`、`relationship-repair`；`default` 控制其余阶段。例：`WLYD_ASSEMBLY_STAGE_TIMEOUT_MS='{"default":600000,"plan":300000}'`。
+阶段名：`diagram`（图材料提炼）、`plan`、`extract`、`write`、`panorama-enrichment`、`consistency-review`、`relationship-repair`；`default` 控制其余阶段。例：`WLYD_ASSEMBLY_STAGE_TIMEOUT_MS='{"default":600000,"plan":300000}'`。
 
 ## 6. 仍未打通与验收边界
 
 - 本版新增的是本机任务去重、检查点与显式恢复；DSH 退出不会继续后台生成。没有云端队列、远程调度或跨设备自动接续；成功章已可通过 chapter action=revise 定向修改。旧版任务没有新版检查点时需重新规划启动。
-- 当前3081仍为0.10.1；0.10.2仅源码、自动化及安装包验证，本轮未启动真实模型生成。实际成稿质量、token与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、安装与自动化结果见测试记录。
+- 当前3081仍为0.10.1；0.11.0仅源码、自动化及安装包验证，本轮未启动真实模型生成。实际成稿质量、token与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、安装与自动化结果见测试记录。
 - 知识库关联候选和本地词面选段可能漏材料；原文回读、Wiki/图谱和公开检索未接，缺少来源的政策不能冒充检索结果。
 - UTF-8 文本、Markdown、DOCX、文字 PDF、PPTX、XLSX、ZIP 支持文字提取；不保证图表、图片文字、版式完整。图片/扫描件 OCR、DMG、旧 Office、音视频、链接抓取未接。
 - 单批 100 文件、单文件 500 MB；ZIP 最多 1000 项/共 1 GB。入口限额不证明任意格式 500 MB 全链路可用，真实大文件链路待验收。
 - 导入上传的是转换后 Markdown，非原始 Office/PDF。附件必须匹配本会话用户真实上传的 ID、文件名和字节数。
 - 本地确认记录不能替代平台用户权限、多用户审批、知识文档不可变版本与乐观锁。最终正文仍须人工确认产品能力、客户事实、政策日期、语义与对外措辞。
-- 文档后接入xiaoma-studio翻页HTML已实现；图形编辑器、架构图绘制、PPTX/PDF和正式CallWan发布适配仍待后续。
+- 文档后接入xiaoma-studio翻页HTML已实现；手动两张SVG已接入；图形编辑器、自动图文合版、PPTX/PDF和正式CallWan发布适配仍待后续。
 
 开发验证和历史实测见 [docs/test-record.md](docs/test-record.md)，详细调度见 [docs/architecture.md](docs/architecture.md)。自动化通过不等于真实模型或业务验收通过。

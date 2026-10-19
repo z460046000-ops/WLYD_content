@@ -1,6 +1,6 @@
 # 文档与演示输出
 
-源码0.10.2。当前3081仍安装0.10.1；本轮仅修超时/恢复、补演示桥接提示词，未安装、重启或真实生成。
+源码0.11.0。当前3081仍安装0.10.1；本轮新增手动两张SVG，未安装、重启或启动真实模型生成。
 
 0.10.1修复了空卡池恢复、空章一次补写、HTML乱序容错与有效重试；程序故障显示“生成故障”，不计为待补材料。普通换主题继续复用，显式`retry=true`会重新调用演示提炼模型。
 
@@ -34,6 +34,33 @@ MD/DOCX确定性导出，无额外写作调用。HTML提炼只选原文关键句
 - `expected_content_sha256`可防止导出期间选错文案版本，变化就拒绝而不是默默换稿。
 
 改正文、引文、能力边界、章节版本、确认或复核状态，旧输出会标`stale=true`；HTML进行中也不会回写report。旧任务完成输出仍标旧版本，不把较新输出指针改回去。只改主题不改变文案哈希。当前不自动重绘所有旧输出；用户选新版本输出即可。
+
+## 手动生成业务/产品两张SVG
+
+文案任务结束后调用：
+
+```json
+{"run_id":"真实生成runId","action":"start","format":"diagrams"}
+```
+
+返回独立`jobId`，用宿主通知/`job_output`收取；查询与取消也传`format=diagrams`。不依赖HTML是否完成，保留现有文档和HTML指针。两图各有状态；`diagramsReady=true`仅表示两张SVG已通过结构检查，`semanticStatus=draft_unverified`、`visualReview=pending`仍要求本次图片人工审阅。
+
+- 从固定文案快照选业务/产品架构章；没有该角色时，选择业务挑战/场景、技术平台等相关章。不从公司或政策章节补造架构。
+- 按约6000字符分批提炼，名称须可定位原文；关系只接受同片段可定位两端与关系词的候选。材料条件、能力状态与来源保留在plan，图上显示候选/试点/第三方等状态。
+- 无模型或提炼失败用原文摘录卡，长文按48字拆卡，不冒充已完成架构设计；缺少相关正文返回`needs_input`。布局/校验错误明确报失败，原文档保留。
+- `retry=true`重做两图；同版完成结果复用，正文变化标`stale`。本批两图依次生成，自动并行、HTML嵌图与只重试单图待第二批。
+- SVG使用固定浅色主题，`theme`仅用于HTML。实际引擎为随包的fireworks静态子集，不依赖全局skill；Python3.9+标准库即可，未接PNG/GIF/统一CLI。
+- `diagramPython`或`WLYD_ASSEMBLY_DIAGRAM_PYTHON`指定Python；图模型复用`presentationRoute`，未配时依次回退`writingRoute`、会话模型。`diagram`阶段支持已有超时/预算配置，未修改本机路由。
+
+```text
+diagram-delivery.json              最新两图版本指针，与delivery.json独立
+diagrams/<exportId>/
+  content.json                    同版固定文案
+  business.plan.json / product.plan.json  来源、条件、节点与候选关系
+  business.svg / product.svg       校验后公布的两图
+  *.fireworks.json / *.layout.json 引擎输入与检查报告
+  manifest.json / model-requests.json  独立状态与模型记录
+```
 
 ## 文件与边界
 

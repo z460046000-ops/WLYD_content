@@ -1,0 +1,156 @@
+{
+  "repository": "https://github.com/yizhiyanhua-ai/fireworks-tech-graph",
+  "commit": "31fea364eda5f1852b1175f3d9e29ea31d22dcb4",
+  "license": "MIT",
+  "scope": "Trimmed static SVG runtime: architecture JSON with generic semantics and Style 4, plus original SVG checks. Original upstream files preserved; not a complete installed skill or unified fireworks.py CLI.",
+  "upstreamRoot": "skills/fireworks-tech-graph",
+  "runtime": {
+    "minimumPython": "3.9",
+    "dependencies": "Python standard library only",
+    "render": "scripts/generate-from-template.py",
+    "renderArguments": [
+      "architecture",
+      "<output.svg>",
+      "--report",
+      "<layout.json>"
+    ],
+    "renderInput": "UTF-8 JSON on stdin; optional third positional argument accepts inline JSON, not a JSON filename",
+    "check": "scripts/validate_svg.py",
+    "checkArguments": [
+      "<output.svg>",
+      "--check",
+      "<xml|markers|collisions|geometry|composition>"
+    ],
+    "checkResult": "Exit 0 with empty stdout on pass; exit 1 with line-separated details on failure. Invoke once per check.",
+    "supportedScope": {
+      "mode": "architecture",
+      "style": 4,
+      "semantic_profile": "generic",
+      "outputs": [
+        "SVG",
+        "layout JSON"
+      ]
+    },
+    "excluded": [
+      "unified fireworks.py CLI",
+      "PNG/HTML/GIF export",
+      "motion and browser/media/npm/pip dependencies",
+      "other diagram modes and style-specific assets",
+      "upstream image assets, fixtures and tests",
+      "global skill installation"
+    ]
+  },
+  "verification": {
+    "pythonActuallyRun": "3.11.3",
+    "python39SyntaxParse": true,
+    "sample": "Temporary Chinese title/container/node labels and sublabels with one semantic edge",
+    "renderExitCode": 0,
+    "checks": [
+      "xml",
+      "markers",
+      "collisions",
+      "geometry",
+      "composition"
+    ],
+    "allCheckExitCodes": 0,
+    "layoutIssues": [],
+    "visualFontReview": "Two synthetic business/product SVGs locally rasterized with bundled Sharp and viewed: Chinese labels, groups, status sublabels and simple edges readable without visible clipping. Not DSH/browser, real-model, arbitrary layout or customer acceptance."
+  },
+  "files": [
+    {
+      "path": "LICENSE",
+      "sourcePath": "skills/fireworks-tech-graph/LICENSE",
+      "sha256": "a71a3dde0999e54206cc012fd97f358e9407e030b1110bac31aaf83834ea2c6d"
+    },
+    {
+      "path": "SKILL.md",
+      "sourcePath": "skills/fireworks-tech-graph/SKILL.md",
+      "sha256": "e499af84ccb5e1e7a7bf4cc9d7bfa1d58cd10e63533236874543b36159064653"
+    },
+    {
+      "path": "scripts/generate-from-template.py",
+      "sourcePath": "skills/fireworks-tech-graph/scripts/generate-from-template.py",
+      "sha256": "061d9fb002764c77caf80ab7317672c342c0d7e7ac7a9eff293b506801177b58"
+    },
+    {
+      "path": "scripts/validate_svg.py",
+      "sourcePath": "skills/fireworks-tech-graph/scripts/validate_svg.py",
+      "sha256": "26fc848b19dce91d01cf934e5e2683f7e013e464f663e9b3de686326d0a0f6bd"
+    },
+    {
+      "path": "scripts/fireworks_geometry.py",
+      "sourcePath": "skills/fireworks-tech-graph/scripts/fireworks_geometry.py",
+      "sha256": "a25df7ba4ac074842a82e1e81f820753ca3888fdb19a0cd307466f4bf50dccab"
+    },
+    {
+      "path": "scripts/composition_quality.py",
+      "sourcePath": "skills/fireworks-tech-graph/scripts/composition_quality.py",
+      "sha256": "a218cdb5f028d2730ae479b62c67d484894bfd1c7bf989389bc43dac21e4840c"
+    },
+    {
+      "path": "scripts/diagram_ir.py",
+      "sourcePath": "skills/fireworks-tech-graph/scripts/diagram_ir.py",
+      "sha256": "4b9a742a583dc050463c762762f461d22c818d083b7f873e48812bb03dec0e37"
+    },
+    {
+      "path": "scripts/semantic_contracts.py",
+      "sourcePath": "skills/fireworks-tech-graph/scripts/semantic_contracts.py",
+      "sha256": "c8c594f18bbdd6016f012fc231d6c8e78810663c52cb18be8d316b49fe39bb70"
+    },
+    {
+      "path": "scripts/svg_canvas.py",
+      "sourcePath": "skills/fireworks-tech-graph/scripts/svg_canvas.py",
+      "sha256": "bae125f36439f4fd75cb5e86f71a11fe50c86ff6cc2e326744090db3fbdb2788"
+    },
+    {
+      "path": "scripts/style_quality.py",
+      "sourcePath": "skills/fireworks-tech-graph/scripts/style_quality.py",
+      "sha256": "f60596c304824ef8f855a1943510e785498e20f744412fab901c6174cc8ab90c"
+    },
+    {
+      "path": "templates/architecture.svg",
+      "sourcePath": "skills/fireworks-tech-graph/templates/architecture.svg",
+      "sha256": "e8cb668e02ba42c5be7a0fbf7be97850a2622e7a141fff668616fbb331039162"
+    },
+    {
+      "path": "schemas/architecture-v1.schema.json",
+      "sourcePath": "skills/fireworks-tech-graph/schemas/architecture-v1.schema.json",
+      "sha256": "4dab8e49edd5e138eb20279f9a5206e928f474cfa719b7902ea9b1ae55f9b5f1"
+    },
+    {
+      "path": "schemas/diagram-v1.schema.json",
+      "sourcePath": "skills/fireworks-tech-graph/schemas/diagram-v1.schema.json",
+      "sha256": "a24f9a33deb25ae2dc34c0b76a836b856cba97f554a1103ba0951776459b5456"
+    },
+    {
+      "path": "references/style-4-notion-clean.md",
+      "sourcePath": "skills/fireworks-tech-graph/references/style-4-notion-clean.md",
+      "sha256": "c46c2903cc29a9470d719b0e3db52aa3229bdfb849dd925dff4afd4c3cf464a5"
+    },
+    {
+      "path": "references/style-diagram-matrix.md",
+      "sourcePath": "skills/fireworks-tech-graph/references/style-diagram-matrix.md",
+      "sha256": "3bb696a40279996f7aa32164fe489691ca5c5381ef0e9ea614b5250dda9226bb"
+    },
+    {
+      "path": "references/diagram-layout-reference.md",
+      "sourcePath": "skills/fireworks-tech-graph/references/diagram-layout-reference.md",
+      "sha256": "8a14faacda9b09f4d536e9b2d273bbf447c82a82ab2a7a7e72ad95c972e120d5"
+    },
+    {
+      "path": "references/svg-layout-best-practices.md",
+      "sourcePath": "skills/fireworks-tech-graph/references/svg-layout-best-practices.md",
+      "sha256": "12f3b6fec94d8d4589ea5507ed767a598008386e7eb8e1b02761a5110dc7d146"
+    },
+    {
+      "path": "references/composition-quality-contract.md",
+      "sourcePath": "skills/fireworks-tech-graph/references/composition-quality-contract.md",
+      "sha256": "fdbac84d6207e57c769e72e2baae1d32868d833aa2aac17fd9727602700485cd"
+    },
+    {
+      "path": "references/visual-quality.md",
+      "sourcePath": "skills/fireworks-tech-graph/references/visual-quality.md",
+      "sha256": "8bf72d852216b7685aa85905146ad85f52552448826f9cb544eadfc243231ebd"
+    }
+  ]
+}

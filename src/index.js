@@ -10,9 +10,11 @@ import { QUALITY_MODES } from './fact-cards.js'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createDeliveryService } from './delivery/tasks.js'
+import { createDiagramService } from './delivery/diagrams.js'
 import { currentDelivery, deliverySummary } from './delivery/manifest.js'
 import { createStatusRenderer } from '../orchestration/status.js'
 import { roleRoute, roleExecution } from '../orchestration/routes.js'
+import { configurationValue } from './scheduler.js'
 
 export const name = 'wlyd-material-knowledge-assembly'
 export const inject = ['tools', 'llm', 'fs', 'jobs']
@@ -35,9 +37,11 @@ export function apply(ctx, config = {}) {
   const client = new PlatformClient(resolveConfig(config))
   const writingRoute = roleRoute(config, 'writing'), presentationRoute = roleRoute(config, 'presentation')
   const delivery = ctx.jobs ? createDeliveryService({ jobs: ctx.jobs, client, llm: ctx.llm, modelRoute: presentationRoute || writingRoute }) : null
+  const diagrams = ctx.jobs ? createDiagramService({ jobs: ctx.jobs, client, llm: ctx.llm, modelRoute: presentationRoute || writingRoute,
+    python: config.diagramPython || configurationValue('WLYD_ASSEMBLY_DIAGRAM_PYTHON') || 'python3' }) : null
   const tasks = ctx.jobs ? createTaskService({ jobs: ctx.jobs, client, llm: ctx.llm, modelRoute: writingRoute,
     afterComplete: (runId, exec) => delivery.submit({ run_id: runId }, exec) }) : null
-  if (tasks) ctx.effect?.(() => async () => { await tasks.close(); await delivery.close() })
+  if (tasks) ctx.effect?.(() => async () => { await tasks.close(); await delivery.close(); await diagrams.close() })
   const orchestrationSkill = readFileSync(new URL('../skills/wlyd-assembly-orchestrate/SKILL.md', import.meta.url), 'utf8')
   ctx.inject?.(['skills'], skillCtx => {
     skillCtx.skills.register({ name: 'wlyd-assembly-orchestrate', description: '先确认文案大纲，再交MD/DOCX和独立翻页HTML，使用宿主通知避免代理轮询',
@@ -155,15 +159,16 @@ export function apply(ctx, config = {}) {
     presentCall: args => card('审阅与修改章节', args?.action === 'list' ? 'read' : 'write', { runId: args?.run_id, chapterKey: args?.chapter_key, action: args?.action }),
   })
   register({ name: 'wlyd_assembly_output',
-    description: '独立输出物：start从当前文案版本先导出MD/DOCX，再提炼关键点生成可自由翻页HTML；query查询产物和过期状态；cancel仅停止HTML。改主题复用同版演示稿，不检索或重写原文。HTML失败文档保留，可retry。',
+    description: '独立输出物：默认先MD/DOCX再翻页HTML；format=diagrams仅从已有文稿生成业务/产品两张SVG，不重检索或重写正文、不自动嵌入HTML。start/query/cancel均须保持format；retry=true重做该类输出。两图使用同版文字和fireworks，失败保留文档。',
     parameters: { run_id: { type: 'string', required: true }, action: { type: 'string', enum: ['start', 'query', 'cancel'] },
-      format: { type: 'string', enum: ['all', 'documents', 'html'] }, theme: { type: 'string', enum: ['editorial', 'swiss', 'blueprint'] },
+      format: { type: 'string', enum: ['all', 'documents', 'html', 'diagrams'] }, theme: { type: 'string', enum: ['editorial', 'swiss', 'blueprint'], description: '仅HTML使用；SVG首版固定浅色主题' },
       retry: { type: 'boolean' }, expected_content_sha256: { type: 'string', description: '可选，防止输出期间用了非预期的文案版本' } }, output,
     execute: (args, exec) => {
-      if (!delivery) throw new Error('DSH jobs服务不可用，无法托管演示输出')
-      if (!args.action || args.action === 'start') return delivery.submit(args, exec)
-      if (args.action === 'query') return delivery.query(args.run_id, exec)
-      if (args.action === 'cancel') return delivery.cancel(args.run_id, exec)
+      const service = args.format === 'diagrams' ? diagrams : delivery
+      if (!service) throw new Error('DSH jobs服务不可用，无法托管输出')
+      if (!args.action || args.action === 'start') return service.submit(args, exec)
+      if (args.action === 'query') return service.query(args.run_id, exec)
+      if (args.action === 'cancel') return service.cancel(args.run_id, exec)
       throw new Error('未知输出操作')
     },
     presentCall: args => card('文档与演示输出', args?.action === 'query' ? 'read' : 'write', { runId: args?.run_id, format: args?.format, theme: args?.theme }),

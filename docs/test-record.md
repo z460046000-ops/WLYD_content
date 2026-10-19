@@ -1,5 +1,36 @@
 # 测试记录
 
+## 2026-10-19：0.11.0 手动两张SVG（未安装）
+
+用户因额度将完整图文流程拆为两批，并指令“继续改吧”。本批只接fireworks静态引擎、基于既有文稿的两张SVG与独立输出入口；保留0.10.2超时恢复。未安装/重启3081，未启动真实模型或知识库组稿，不修改真实run或模型配置。
+
+### 修改与原因
+
+| 文件 | 作用 |
+|---|---|
+| src/outputs/diagrams/plan.js | 按图角色选择相关正文，分批提炼来源可定位的节点/候选关系；不可用时完整摘录拆卡，包含重复段与尾部，不生成无据架构 |
+| src/outputs/diagrams/render.js | 确定性中文分组布局，调用fireworks静态生成与五项检查，通过后公布SVG；来源哈希写入metadata，Python -B不写vendor缓存 |
+| src/delivery/diagrams.js | 独立宿主任务、两图状态/取消/缓存/版本/失效检测；关闭接纳竞态检查，失败保留文案和另一图；本批依次处理两图 |
+| src/delivery/authorize.js、tasks.js | 将原有用户/材料/知识/引用授权核验提为共享函数，HTML行为不变，图发布前再核验 |
+| src/index.js、model.js、skills/wlyd-assembly-orchestrate/SKILL.md | 既有第八工具新增format=diagrams，保留8工具；Python与diagram阶段配置、释放作业及手动使用说明 |
+| prompts/outputs/diagrams.md | 从diagram-design抽象的8条精简设计规范，仅图提炼阶段加载，不改文字规则 |
+| vendor/fireworks-tech-graph/ | 固定31fea364提交，19份原件+MIT/来源摘要/裁剪说明，Python标准库静态子集；不是完整skill/统一CLI，无新增npm/pip依赖 |
+| test/diagrams-render、diagrams-service、fireworks-vendor | 实际渲染、原件摘要、来源边界/长文、独立任务、失败/缓存/权限/取消/版本/接纳竞态 |
+| package/lock、README、architecture、output-guide、backlog、diagram-output-plan、memory | 0.11.0版本、安装/配置/文件位置、实际第一批与第二批边界及记忆 |
+
+### 验证结果
+
+- Node22.22.2全套 **283/283通过**，0失败、取消、跳过。DOCUMENT_OUTPUT_FIXTURE_DIR开启文档测试；44个模块语法、git diff --check通过。
+- Python3.11.3实际生成业务/产品中文SVG，通过xml、markers、collisions、geometry、composition五项。207字/202字重复片段曾暴露fallback容量/去重问题，最终回归以202字无句号重复卡片验证逐字覆盖，严格文字检查不放宽。
+- 独立服务8项验证：原report/run/delivery.json逐字节不变；运行/完成缓存；单图失败保另一图；取消/owner隔离；用户与知识授权撤回；正文更新与过期；缺图/篡改失效；缺料不调渲染；关闭期间不接纳新作业。
+- 两张合成样图在/tmp/wlyd-0110-diagrams-qa，用本地bundled Sharp将SVG转PNG并实际查看，中文标题、分组、状态和简单连线清楚，未见裁切。浏览器拒绝file协议，未绕过；本地栅格预览不等于浏览器/DSH视觉验收。Sharp只用于本轮检查，不是插件依赖。
+
+### 尚未验证与下一批
+
+未在DSH/真实模型跑图，未验证复杂交叉连线、任意长分组标题、多平台字体、无Python机器和实际客户语义；Python3.9仅语法兼容核对，实跑3.11.3。每次输出仍标draft_unverified/visualReview pending，不能把本次样图检查当作后续每张图均验收。
+
+两图自动并行、HTML嵌图、单图重试尚未实现；当前手动启动、同job依次两图，retry=true重做两图。PNG/GIF/PDF/PPTX、图形编辑器仍未接。当前3081仍为0.10.1，等待用户另行通知安装重启。包/SHA与隔离加载检查在发布补记中列出。
+
 ## 2026-10-19：0.10.2 超时与批次恢复（未安装）
 
 用户选择“先只修超时和恢复”，另补充文案到HTML的桥接提示词。本轮只改代码、验证并打包；不安装、不重启DSH、不改当前任务、配置或模型路由。目录确认与可选章策略不在本版。
@@ -509,3 +540,10 @@ Node.js 22.22.2：`npm test` **140/140 通过，0 失败、0 取消**；`npm run
 ### 0.4.0 安装后的补充纠正
 
 用户反馈 confirm 仍返回预览。升级前服务进程仍在，包元数据更新不能证明运行内工具刷新；已完整重启 web/3080，浏览器确认 0.4.0 组件运行中。安装模块独立烟测确认：confirm 无有效规划拒绝，generate 无确认 ID/哈希拒绝，不可传目录绕过。未运行真实模型/用户会话工具调用；旧会话参数是否缺 action 未取得直接证据。此前“无需重启”的结论撤回，升级操作改为完整重启并刷新，再从 action=plan 开始。
+
+
+### 0.11.0 发布补记（打包后记录）
+
+- 安装包 `releases/wlyd-dsh-material-knowledge-assembly-0.11.0.tgz`：414151字节，113文件；SHA-256 `cb733a2220daf23155795aed347677c11aa0404ebabc70a37ba74830b30cf7df`，已登记SHA256SUMS。包内所有文件在打包时逐字节等于源码；未带测试、私有材料、凭据、依赖目录或Python缓存。两套vendor原件SHA核对通过。
+- 临时目录隔离解包后，实际加载8工具、1编排skill、3个独立controller，目录预览返回0.11.0；从该包实际生成业务/产品SVG并通过五项检查，销毁服务正常。依赖复用本机现有node_modules；没有运行安装器、修改DSH或真实调用模型/后端。
+- 这是包快照之后的发布补记，不改变同名tgz。当前3081安装包只读核对仍为0.10.1，未安装或重启。下一步由用户决定切换时间，安装说明见README。

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile, rename, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { rootOf, runPath, sourceEvidence } from '../store.js'
+import { rootOf, runPath } from '../store.js'
 import { readJson, atomicJson, claimRun } from '../persistence.js'
 import { createSnapshot } from '../content/snapshot.js'
 import { renderOutput } from '../outputs/registry.js'
@@ -11,7 +11,7 @@ import { renderPresentation } from '../outputs/html-slides/render.js'
 import { validatePresentation } from '../outputs/html-slides/validate.js'
 import { createRequester } from '../context.js'
 import { resolveWritingModel } from '../model.js'
-import { createRetrieval } from '../retrieval.js'
+import { authorizeContent } from './authorize.js'
 import { currentDelivery, deliverySummary, saveManifest } from './manifest.js'
 
 const FINISHED = new Set(['draft_ready', 'needs_human_review', 'partial_draft', 'failed', 'cancelled'])
@@ -26,24 +26,7 @@ export function createDeliveryService({ jobs, client, llm, modelRoute, build = b
   const live = new Map()
   let closing = false
   const detach = jobs.attachController('wlyd-assembly-delivery')
-  const authorize = async (runId, exec) => {
-    const dir = runPath(exec.agent, runId), state = await readJson(path.join(dir, 'run.json'))
-    if (state.actorDshId && state.actorDshId !== exec.agent.session?.user?.id) throw new Error('当前用户无权导出此文案')
-    const saved = await readJson(path.join(dir, 'run-input.json'))
-    if (!saved?.args || !state.projectId) throw new Error('缺少文案输入或项目记录，不能验证导出权限')
-    const source = await sourceEvidence(exec.agent, saved.args)
-    const evidence = (await readJson(path.join(dir, 'evidence.json'))).evidence
-    if (!Array.isArray(evidence) || !evidence.some(row => row.kind === 'knowledge')) throw new Error('缺少知识库证据归档，不能验证导出权限')
-    const access = createRetrieval({ client, projectId: state.projectId, evidence: source.evidence, signal: exec.signal })
-    await access.restoreEvidence(evidence)
-    const report = await readJson(path.join(dir, 'report.json'))
-    for (const section of report.sections || []) for (const block of section.blocks || []) for (const ref of block.evidence || []) {
-      if (typeof ref.quote !== 'string' || ref.quote.length < 6 || !access.evidence.some(row => row.id === ref.id && row.content.includes(ref.quote))) {
-        throw new Error('正文引用不在当前授权证据归档内，不能导出')
-      }
-    }
-    return { dir, state, report }
-  }
+  const authorize = (runId, exec) => authorizeContent(client, runId, exec)
   const query = async (runId, exec) => {
     await authorize(runId, exec)
     const current = await currentDelivery(exec.agent, runId)

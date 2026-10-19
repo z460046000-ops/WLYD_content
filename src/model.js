@@ -7,7 +7,7 @@ const DEFAULT_STAGE_TIMEOUT_MS = 600_000
 const DEFAULT_QUEUE_TIMEOUT_MS = 1_800_000
 const MIN_CONFIGURED_TIMEOUT_MS = 60_000
 const MAX_CONFIGURED_TIMEOUT_MS = 1_800_000
-const STAGES = new Set(['plan', 'extract', 'write', 'panorama-enrichment', 'consistency-review', 'relationship-repair', 'presentation'])
+const STAGES = new Set(['plan', 'extract', 'write', 'panorama-enrichment', 'consistency-review', 'relationship-repair', 'presentation', 'diagram'])
 const USAGE_FIELDS = ['inputTokens', 'outputTokens', 'totalTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens']
 
 function configuredTimeout(value) {
