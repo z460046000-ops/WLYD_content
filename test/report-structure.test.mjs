@@ -25,7 +25,7 @@ test('可变目录按层级保留失败必需章和部分正文，显式省略�
   ], reviewItems: ['内部模型审核事项'], validationIssues: ['内部校验错误'], gaps: ['材料缺项详情'] }
   const text = reportText(report)
   assert.match(text, /部分草稿/u)
-  assert.match(text, /## 运营情况\n\n> 本章尚未完成/u)
+  assert.match(text, /## 运营情况\n\n> 生成故障：本章尚未完成/u)
   assert.match(text, /## 建设方案/u)
   assert.match(text, /### 交接流程\n\n> 本章尚未完整/u)
   assert.ok(text.includes('用统一记录衔接团队之间的业务交接。'))
@@ -119,7 +119,7 @@ test('组稿落盘时 report、run、status 同步真实缺章状态并交付独
   assert.deepEqual(state.chapterOutcomes, report.chapterOutcomes)
   assert.equal(state.reviewPath, result.reviewPath)
   assert.equal(state.reviewJsonPath, result.reviewJsonPath)
-  assert.match(text, /## 实施边界\n\n> 本章尚未完成/u)
+  assert.match(text, /## 实施边界\n\n> 生成故障：本章尚未完成/u)
   assert.doesNotMatch(text, /模拟章节服务不可用|请核对客户适用范围|待补充或人工确认/u)
   assert.match(await readFile(result.reviewPath, 'utf8'), /模拟章节服务不可用|请核对客户适用范围/u)
   assert.deepEqual(review.raw.gaps, report.gaps)

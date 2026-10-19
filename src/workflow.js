@@ -232,7 +232,10 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
       const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
       const requiredGaps = incomplete.filter(row => row.required && !['pending', 'draft_unverified'].includes(row.status))
         .map(row => `${row.title}：必需章节${row.status === 'partial' ? '尚未完整' : '未成稿'}，原因见逐章运行记录`)
-      const reviewStatus = intermediate ? phase : ['draft', 'standard'].includes(args.quality_mode) ? 'draft_ready'
+      const hasProse = generated.sections.some(section => section.blocks?.some(block => String(block.text || '').trim()))
+      const generationFault = outcomes.some(row => row.status === 'failed')
+      const reviewStatus = intermediate ? phase : ['draft', 'standard'].includes(args.quality_mode)
+        ? generationFault ? hasProse ? 'partial_draft' : 'failed' : 'draft_ready'
         : generated.sections.length ? (incomplete.length ? 'partial_draft' : 'needs_human_review') : 'failed'
       const assemblyReview = { ...generated.review, ...(incomplete.length ? { passed: false,
         incompleteChapters: incomplete.map(row => row.key) } : {}),
@@ -294,6 +297,7 @@ export async function assemble({ client, llm, args, exec, runId, prepared, resum
     const report = await publish(generated)
     const outcomes = report.chapterOutcomes
     return { runId: outputId, status: state.status, sections: report.sections.length, evidence: evidence.length,
+      contentCoverage: report.contentCoverage,
       choices: report.choices, planningStatus: state.planning.status, failedChapters: outcomes.filter(item => ['failed', 'cancelled'].includes(item.status)).map(item => item.title),
       partialChapters: outcomes.filter(item => item.status === 'partial').map(item => item.title),
       omittedChapters: outcomes.filter(item => item.status === 'omitted').map(item => item.title),

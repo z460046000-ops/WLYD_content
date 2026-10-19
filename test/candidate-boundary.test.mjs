@@ -106,7 +106,7 @@ test('零正文失败保留目录占位，并明确标注生成失败', () => {
   const failed = { title: '测试方案', outline: [outline[0]], sections: [],
     chapterOutcomes: [{ key: 'business-map', status: 'failed' }], reviewStatus: 'failed' }
   assert.match(reportText(failed), /生成未完成：没有可校验正文/u)
-  assert.match(reportText(failed), /本章尚未完成，待补充/u)
+  assert.match(reportText(failed), /生成故障：本章尚未完成，不能据此认定缺料/u)
   assert.match(reviewText(reviewDocument(failed)), /稿件状态：生成失败/u)
 })
 

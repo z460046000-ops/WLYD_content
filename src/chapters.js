@@ -6,15 +6,28 @@ import { readJson, atomicJson, claimRun } from './persistence.js'
 import { loadRules, flattenOutline } from './rules.js'
 import { reportText, reviewDocument, reviewText } from './content.js'
 import { commonContext, createRequester, chapterPlan, list, strings } from './context.js'
-import { factCards, annotateDraft } from './fact-cards.js'
+import { annotateDraft } from './fact-cards.js'
 import { draftWritePrompt } from './draft-generation.js'
 import { createRetrieval } from './retrieval.js'
 import { reviewAssembly } from './review.js'
-import { routeFacts } from './evidence-policy.js'
 import { linksFromPlan } from './generation.js'
 import { coverageFromReport } from './content/coverage.js'
+import { resolveChapterCards } from './content/card-recovery.js'
 
 const TERMINAL = new Set(['draft_ready', 'needs_human_review', 'partial_draft', 'failed', 'cancelled'])
+const manuscriptStatus = report => list(report.chapterOutcomes).some(row => row.status === 'failed')
+  ? list(report.sections).some(section => list(section.blocks).some(block => String(block.text || '').trim())) ? 'partial_draft' : 'failed'
+  : 'draft_ready'
+function revisedDiagnostics(rows, cards) {
+  const prior = rows.filter(Boolean)
+  return { ...Object.assign({}, ...prior), reasonCode: null, reasonCodes: [], hasProse: true, selectedFacts: cards.length,
+    historicalReasonCodes: strings(prior.flatMap(row => [...list(row.historicalReasonCodes), ...list(row.reasonCodes), row.reasonCode])) }
+}
+function revisedOutcome(row, chapter) {
+  const { error, ...previous } = row
+  return { ...previous, status: chapter.status, version: chapter.version, diagnostics: chapter.diagnostics,
+    ...(error ? { historicalErrors: strings([...list(row.historicalErrors), error]) } : {}) }
+}
 const summary = (report, node) => {
   const record = report.chapterRecords?.[node.key] || {}
   const outcome = report.chapterOutcomes.find(row => row.key === node.key) || {}
@@ -82,9 +95,14 @@ export async function chapterAction({ client, llm, args, exec }) {
       await access.restoreEvidence(evidence)
       const chapterDir = path.join(dir, 'chapters', node.key)
       const old = await readJson(path.join(chapterDir, 'chapter.json'), {})
-      const storedCards = await readJson(path.join(chapterDir, 'cards.json'), null)
-      const extraction = await readJson(path.join(chapterDir, 'extraction.json'), { facts: [] })
-      const cards = storedCards?.cards || factCards(routeFacts(extraction.facts, node, rules.chapters[node.roleId] || rules.global.customChapter).facts)
+      const rule = rules.chapters[node.roleId] || rules.global.customChapter
+      const recovered = await resolveChapterCards({ chapterDir, evidence: access.evidence, node, rule })
+      const cards = recovered.cards
+      if (!cards.length) {
+        const error = new Error(`本章事实卡池无法安全恢复（${recovered.failureCode || 'card_pool_empty'}）；未调用修订模型，当前稿件和版本已保留。请核对原批次来源或仅重新生成本章`)
+        error.code = 'CHAPTER_CARD_POOL_EMPTY'
+        throw error
+      }
       const plan = await readJson(path.join(dir, 'plan.json'))
       const common = commonContext(rules, saved.args)
       const request = await createRequester({ llm, exec, state,
@@ -94,10 +112,14 @@ export async function chapterAction({ client, llm, args, exec }) {
       if (targetIds && (!targetIds.length || targetIds.some(id => !current.blocks.some(block => block.id === id)))) throw new Error('block_ids 含无效段落，请先 list')
       const target = targetIds ? current.blocks.filter(block => targetIds.includes(block.id)) : current.blocks
       const started = Date.now()
-      const raw = await request(draftWritePrompt({ common, node, rule: rules.chapters[node.roleId] || rules.global.customChapter,
+      const raw = await request(draftWritePrompt({ common, node, rule,
         cards, plan: chapterPlan(plan, node), blocks: target,
         instruction: `${text}\n本章尚未解决的用户意见：${record.notes.filter(note => note.status === 'open').map(note => note.text).join('；')}` }))
       const checked = annotateDraft(list(raw.sections).filter(row => row.key === node.key).flatMap(row => list(row.blocks)), cards, evidence, node, plan)
+      if (rule.contentPolicy?.allowCandidate === false || ['customer-cases', 'company-profile'].includes(node.roleId)) {
+        checked.section.blocks = checked.section.blocks.filter(block => block.supportMode === 'sourced' && block.evidence.length
+          && block.factIds?.some(id => cards.some(card => card.id === id && card.supportMode === 'sourced')))
+      }
       if (!checked.section.blocks.length) throw new Error('修改未返回正文，原版本已保留')
       let next = checked.section
       if (targetIds) {
@@ -111,19 +133,28 @@ export async function chapterAction({ client, llm, args, exec }) {
         }) }
       }
       await mkdir(path.join(chapterDir, 'versions'), { recursive: true, mode: 0o700 })
+      if (recovered.changed) await atomicJson(path.join(chapterDir, 'cards.json'), { cards, recovery: {
+        source: recovered.source, referenceAudit: recovered.referenceAudit, checkedAt: new Date().toISOString() } })
       const beforeVersion = record.version
       await atomicJson(path.join(chapterDir, 'versions', `${beforeVersion}.json`), { ...old, section: current, version: beforeVersion })
       record.version++; record.approvalStatus = 'pending'
       record.lastInstruction = text; record.updatedAt = new Date().toISOString(); record.writeMs = Date.now() - started
-      const chapter = { section: next, version: record.version, status: 'draft_unverified', reviewItems: checked.issues,
+      const diagnostics = revisedDiagnostics([old.diagnostics, state.chapters?.find(row => row.key === node.key)?.diagnostics,
+        state.chapterOutcomes?.find(row => row.key === node.key)?.diagnostics,
+        report.chapterOutcomes.find(row => row.key === node.key)?.diagnostics], cards)
+      const chapter = { section: next, version: record.version, status: 'draft_unverified', reviewItems: strings([...recovered.reviewItems, ...checked.issues]),
+        diagnostics,
+        cardRecovery: { source: recovered.source, referenceAudit: recovered.referenceAudit },
         parentVersion: beforeVersion, instruction: text, generatedAt: record.updatedAt }
       await atomicJson(path.join(chapterDir, 'versions', `${record.version}.json`), chapter)
       report.sections = report.sections.map(section => section.key === node.key ? next : section)
       report.assemblyLinks = linksFromPlan(plan, report.sections, report.outline)
-      report.chapterOutcomes = report.chapterOutcomes.map(row => row.key === node.key ? { ...row, status: chapter.status, version: record.version } : row)
-      state.chapters = state.chapters.map(row => row.key === node.key ? { ...row, status: chapter.status, version: record.version } : row)
-      report.reviewItems = strings([...report.reviewItems, ...checked.issues.map(issue => `v${record.version} ${issue}`)])
-      report.reviewStatus = 'draft_ready'; state.status = 'draft_ready'
+      report.chapterOutcomes = report.chapterOutcomes.map(row => row.key === node.key ? revisedOutcome(row, chapter) : row)
+      state.chapters = state.chapters.map(row => row.key === node.key ? revisedOutcome(row, chapter) : row)
+      state.chapterOutcomes = Array.isArray(state.chapterOutcomes)
+        ? state.chapterOutcomes.map(row => row.key === node.key ? revisedOutcome(row, chapter) : row) : structuredClone(report.chapterOutcomes)
+      report.reviewItems = strings([...report.reviewItems, ...chapter.reviewItems.map(issue => `v${record.version} ${issue}`)])
+      report.reviewStatus = manuscriptStatus(report); state.status = report.reviewStatus
       report.assemblyReview = { ...report.assemblyReview, status: 'pending', passed: false, changedChapters: [node.key] }
       await atomicJson(path.join(dir, 'report.json'), report)
       await atomicJson(path.join(chapterDir, 'chapter.json'), chapter)
@@ -134,7 +165,7 @@ export async function chapterAction({ client, llm, args, exec }) {
         signal: exec.signal, ruleFingerprint: rules.fingerprint, allowRepairs: false, splitOnResource: false })
       report.assemblyReview = { ...reviewed.review, passed: false, changedChapters: [node.key] }
       report.reviewItems = strings([...report.reviewItems, ...reviewed.reviewItems])
-      state.status = 'draft_ready'; record.totalMs = Date.now() - started
+      state.status = manuscriptStatus(report); report.reviewStatus = state.status; record.totalMs = Date.now() - started
     } else throw new Error('未知章节操作')
     report.generatedAt = new Date().toISOString()
     report.contentCoverage = coverageFromReport(report)
@@ -144,7 +175,7 @@ export async function chapterAction({ client, llm, args, exec }) {
       reviewPath: path.join(dir, 'review.md'), note: '用户定稿表示人工认可；引用定位不代替事实与语义核验' }
   } catch (error) {
     if (state.status === 'reviewing') {
-      state.status = 'draft_ready'
+      state.status = manuscriptStatus(report); report.reviewStatus = state.status
       state.review = { ...state.review, status: 'partial', passed: false, error: error.message }
       report.assemblyReview = state.review
       report.reviewItems = strings([...report.reviewItems, `章节修改后的复核未完成：${error.message}`])

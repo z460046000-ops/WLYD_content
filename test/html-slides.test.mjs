@@ -25,6 +25,7 @@ test('无模型仍可独立交付原文分页；保留材料卡、版本、来�
   assert.equal(plan.sourceContentSha256, source.sourceContentSha256)
   assert.equal(plan.sourceVersions[0].version, 2)
   assert.equal(plan.slides[0].mode, 'source-pagination')
+  assert.equal(plan.slides[0].title, source.sections[0].title, '原文分页用章节标题，不把短句当作演示标题')
   assert.deepEqual(plan.slides[0].sourceBlockIds, ['solution-1'])
   assert.deepEqual(plan.slides[0].planRefs.problemIds, ['problem-1'])
   for (const label of ['待用户确认', '候选方案', '来源待核验', '试点中', '第三方能力']) assert.ok(plan.slides[0].boundaries.includes(label))
@@ -64,6 +65,47 @@ test('未知引用、额外事实、丢条件或异常均退回真实原文，�
     const combined = plan.slides.flatMap(slide => slide.points || []).map(point => point.text).join('')
     assert.equal(combined, source.sections[0].blocks[0].text)
     assert.equal(combined.includes('80%'), false)
+  }
+})
+
+test('有效句段页内逆序或跨页交叉时恢复整体原文顺序，并重新按页容量分页', async () => {
+  for (const order of [[2, 1, 0, 5, 4, 3], [0, 3, 5, 1, 2, 4], [0, 1, 2, 3, 4, 5]]) {
+    const source = snapshot()
+    source.sections = [source.sections[0]]
+    source.sections[0].blocks[0].text = Array.from({ length: 6 }, (_, index) => `第${index + 1}项${'甲'.repeat(120)}。`).join('')
+    let calls = 0
+    const plan = await buildPresentation({ snapshot: source, request: async ({ units }) => {
+      calls++
+      const ids = order.map(index => units[index].id)
+      return { slides: [{ unitIds: ids.slice(0, 3) }, { unitIds: ids.slice(3) }] }
+    } })
+    assert.equal(calls, 1, '程序排序与分页不得增加模型调用')
+    assert.deepEqual(plan.warnings, [])
+    assert.ok(plan.slides.every(slide => slide.mode === 'extractive-selection'))
+    assert.ok(plan.slides.every(slide => slide.points.length <= 3 && slide.points.reduce((sum, point) => sum + [...point.text].length, 0) <= 300))
+    assert.equal(plan.slides.flatMap(slide => slide.points).map(point => point.text).join(''), source.sections[0].blocks[0].text)
+    assert.deepEqual(validatePresentation(plan, source), [])
+  }
+})
+
+test('顺序容错不接受未知或重复ID，也不接受丢失条件或整段来源', async () => {
+  for (const response of [
+    ({ units }) => ({ slides: [{ unitIds: [units[0].id, 'unknown'] }] }),
+    ({ units }) => ({ slides: [{ unitIds: [units[0].id, units[0].id] }] }),
+    ({ units }) => ({ slides: [{ unitIds: [units[0].id, units[2].id] }] }),
+    ({ units }) => ({ slides: [{ unitIds: [units[1].id, units[0].id] }] }),
+  ]) {
+    const source = snapshot()
+    source.sections = [source.sections[0]]
+    source.sections[0].blocks = [
+      { id: 'b1', text: '统一业务入口。在客户授权后可试点同步。', planRefs: {} },
+      { id: 'b2', text: '销售和服务共享业务信息。', planRefs: {} },
+    ]
+    const plan = await buildPresentation({ snapshot: source, request: response })
+    assert.equal(plan.slides[0].mode, 'source-pagination')
+    assert.equal(plan.warnings.length, 1)
+    assert.equal(plan.slides[0].title, source.sections[0].title)
+    assert.deepEqual(validatePresentation(plan, source), [])
   }
 })
 

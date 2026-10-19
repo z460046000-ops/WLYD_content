@@ -19,10 +19,11 @@ export async function createRequester({ llm, exec, state, saveState }) {
   state.modelSelection = selection
   state.modelRequests ||= []
   await saveState()
-  return async prompt => {
+  return async (prompt, provenance = {}) => {
     const input = JSON.stringify(prompt)
     const supplied = list(prompt.evidence)
-    const sourceCards = prompt.generationMode === 'retrieve-write' ? list(prompt.facts) : []
+    // Source IDs are audit metadata, not competing IDs in the model's fact-card contract.
+    const sourceCards = prompt.generationMode === 'retrieve-write' ? list(provenance.sourceCards || prompt.facts) : []
     const record = { stage: prompt.stage, ...(prompt.chapter?.key ? { chapterKey: prompt.chapter.key } : {}),
       ...(prompt.reviewScope ? { reviewScope: prompt.reviewScope } : {}),
       ...(prompt.retrievalRound ? { retrievalRound: prompt.retrievalRound } : {}),

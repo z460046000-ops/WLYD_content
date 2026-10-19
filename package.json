@@ -1,6 +1,6 @@
 {
   "name": "@wlyd/dsh-material-knowledge-assembly",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "独立 DSH 材料与知识组装插件",
   "license": "MIT",
   "type": "module",

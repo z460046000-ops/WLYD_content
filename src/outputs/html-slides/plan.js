@@ -40,25 +40,27 @@ function batchesFor(units) {
 function selectedGroups(raw, units) {
   if (!raw || !Array.isArray(raw.slides) || !raw.slides.length) throw new Error('没有返回演示页面')
   const known = new Map(units.map(unit => [unit.id, unit])), positions = new Map(units.map((unit, index) => [unit.id, index]))
-  const seen = new Set(), groups = []
-  let lastPosition = -1
+  const seen = new Set(), groups = [], selected = []
+  let lastPosition = -1, repaginate = false
   for (const slide of raw.slides) {
     if (!slide || Object.keys(slide).some(key => key !== 'unitIds') || !Array.isArray(slide.unitIds)
       || !slide.unitIds.length || slide.unitIds.length > 3) throw new Error('页面必须仅包含一至三个原文句段 ID')
     const group = []
     for (const id of slide.unitIds) {
       if (typeof id !== 'string' || !known.has(id) || seen.has(id)) throw new Error('句段 ID 未知或重复')
-      if (positions.get(id) < lastPosition) throw new Error('精简改变了原文句段先后关系')
+      if (positions.get(id) < lastPosition) repaginate = true
       lastPosition = positions.get(id)
-      seen.add(id); group.push(known.get(id))
+      seen.add(id); group.push(known.get(id)); selected.push(known.get(id))
     }
-    if (group.reduce((sum, unit) => sum + [...unit.text].length, 0) > 300) throw new Error('单页文案过多，需要拆页')
+    if (group.reduce((sum, unit) => sum + [...unit.text].length, 0) > 300) repaginate = true
     groups.push(group)
   }
   if (units.some(unit => unit.protected && !seen.has(unit.id))) throw new Error('精简遗漏条件或能力边界')
   const selectedBlocks = new Set([...seen].map(id => known.get(id).sourceBlockId))
   if (units.some(unit => !selectedBlocks.has(unit.sourceBlockId))) throw new Error('精简遗漏原文段落')
-  return groups
+  // A model may group later sentences before earlier ones. Restore the complete
+  // selection's source order before pagination, including crossings between pages.
+  return repaginate ? fallbackGroups(selected.sort((first, second) => positions.get(first.id) - positions.get(second.id))) : groups
 }
 
 function fallbackGroups(units) {
@@ -84,7 +86,7 @@ function pageFrom(group, section, sources, mode) {
   const selected = sources.filter(source => source.sectionKey === section.key && group.some(unit => unit.sourceBlockId === source.id))
   const headline = group.find(unit => !unit.continuation && [...unit.text].length <= 48)?.text
   return { kind: 'content', sectionKey: section.key, sectionTitle: section.title,
-    title: headline || section.title, mode, sourceBlockIds: unique(group.map(unit => unit.sourceBlockId)),
+    title: mode === 'source-pagination' ? section.title : headline || section.title, mode, sourceBlockIds: unique(group.map(unit => unit.sourceBlockId)),
     planRefs: mergeRefs(selected), boundaries: unique(selected.flatMap(source => source.boundaries)),
     points: group.map(unit => ({ text: unit.text, sourceBlockIds: [unit.sourceBlockId], continuation: unit.continuation })),
     sourceConditions: unique(selected.flatMap(source => source.conditions)),
@@ -114,10 +116,10 @@ export async function buildPresentation({ snapshot, request, signal } = {}) {
   for (const section of sections) {
     if (signal?.aborted) throw signal.reason || new Error('演示生成已取消')
     if (!section.units.length) {
-      slides.push({ kind: 'material-card', sectionKey: section.key, sectionTitle: section.title,
+      slides.push({ kind: 'material-card', sectionKey: section.key, sectionTitle: section.title, status: section.status,
         title: section.title, reason: text(section.inputNeeded?.reason) || '本章暂无正文，待补充或重新生成',
         questions: list(section.inputNeeded?.questions).filter(value => typeof value === 'string'),
-        boundaries: ['待补材料', '不属于已完成正文'], sourceBlockIds: [], planRefs: {} })
+        boundaries: [section.status === 'failed' ? '生成故障' : '待补材料', '不属于已完成正文'], sourceBlockIds: [], planRefs: {} })
       continue
     }
     for (const [batchIndex, units] of batchesFor(section.units).entries()) {

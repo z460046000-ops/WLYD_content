@@ -80,7 +80,8 @@ export function validatePresentation(plan, snapshot) {
     if (slide.sectionTitle !== section.title) issues.push('页面章节标题与原文不一致')
     if (slide.kind === 'material-card') {
       if (list(section.blocks).some(block => String(block.text || '').trim())) issues.push('有正文的章节不能替换为材料卡')
-      if (!list(slide.boundaries).includes('待补材料')) issues.push('材料卡缺少待补标记')
+      const label = section.status === 'failed' ? '生成故障' : '待补材料'
+      if (slide.status !== section.status || !list(slide.boundaries).includes(label)) issues.push('无正文页的故障或缺料标记不一致')
       if (slide.reason !== (section.inputNeeded?.reason || '本章暂无正文，待补充或重新生成')) issues.push('材料卡原因被改写')
       continue
     }

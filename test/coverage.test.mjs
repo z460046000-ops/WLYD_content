@@ -63,7 +63,7 @@ async function run(t, options = {}, configure) {
   if (configure) configure(f.client)
   const service = createTaskService({ ...f, llm: model(options) }); t.after(() => service.close())
   const submitted = await service.submit(f.args, f.exec)
-  assert.equal((await f.jobs.settled(submitted.jobId)).status, 'completed')
+  assert.equal((await f.jobs.settled(submitted.jobId)).status, options.timeout || options.retrievalFail ? 'failed' : 'completed')
   const dir = runPath(f.agent, submitted.runId), report = await readRecord(path.join(dir, 'report.json'))
   const chapter = await readRecord(path.join(dir, 'chapters/business/chapter.json'))
   return { chapter, report, state: JSON.parse(await readFile(path.join(dir, 'run.json'), 'utf8')) }
@@ -73,7 +73,8 @@ test('生成中区分知识库零命中与检索请求失败，规划锚点不�
   const empty = await run(t, {}, client => { client.search = async () => [] })
   assert.equal(empty.chapter.diagnostics.knowledgeHits, 0)
   assert.ok(empty.chapter.diagnostics.reasonCodes.includes('zero_knowledge_hits'))
-  const failed = await run(t, {}, client => { client.search = async () => { throw new Error('network unavailable') } })
+  const failed = await run(t, { retrievalFail: true }, client => { client.search = async () => { throw new Error('network unavailable') } })
+  assert.equal(failed.chapter.status, 'failed')
   assert.equal(failed.chapter.diagnostics.reasonCode, 'retrieval_failed')
   assert.ok(failed.chapter.diagnostics.failedQueries > 0)
   assert.ok(!failed.chapter.diagnostics.reasonCodes.includes('zero_knowledge_hits'))

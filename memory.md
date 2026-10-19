@@ -449,3 +449,22 @@
 - README/architecture/output-guide/backlog/test-record/content-output-plan同步；新依赖docx9.11.0，包白名单含prompts/skills/vendor/orchestration。没有真实后端/模型验收和耗时统计，不能认定七章缺文已实测修复；Windows/Word和真实演示观感待用户确认。多源FAQ/回读/自动缓存/图形编辑/PPTX/PDF/海报视频未做。按持续指令不安装、不重启DSH、不改profile；交付包后等用户指令。
 
 - 0.10.0交付包278727字节、82文件，SHA-256 0bf5511f9e63b7f17f89e6b7077cfd05417fcd51b0c8ac17e35a60cf9c6d32eb。白名单/逐字节核对及独立审查通过，临时解包Node22烟测8工具/1skill/目录/MD/DOCX/HTML通过；依赖复用本仓库node_modules，非独立DSH安装。SHA已登记，测试记录补包信息，同版本不重打。仍未安装或重启，真实模型和用户质量待验收。
+
+## 2026-10-18：用户授权安装并启动0.10.0
+
+- 最新“启动dsh，并把插件放入”已授权本次切换，先前不安装/重启限制不再适用于本次3081测试环境。沿用profile wlyd-assembly-021-browser，由0.8.0升级0.10.0；只读确认日常3080的PID25058，未修改它。目标旧进程47202停止，新进程81837监听3081，启动通过独立进程保持运行。
+- 配置备份T/wlyd-0100-profile-20261018-oe3oma74；使用DSH原生plugin add安装既有tgz，无重打包。82文件与tgz一致，SHA-256仍0bf5511f9e63b7f17f89e6b7077cfd05417fcd51b0c8ac17e35a60cf9c6d32eb。Node22安装模块烟测8工具/1skill/六章目录/global0.11及DOCX/HTML模块通过。
+- 浏览器3081刷新，插件详情确认material-knowledge-assembly v0.10.0启用、唯一组件运行中；标记页面保留并显示。未调用真实模型或知识库、不自动发送测试消息，正文/关联/耗时仍待用户验收。建议新会话重新plan/confirm，原导入可复用，旧0.8规划规则指纹已不同。
+- 仅同步README、docs/output-guide、docs/test-record和本记忆的部署状态；不改业务代码或同版包。包内说明为2026-10-16快照，当前仓库记录为安装补记。
+
+## 2026-10-19：0.10.1修复实测来源契约及空卡池
+
+- 用户提供plugin-0100-defect-sourcecard-ids与run-summary-wancall-v4，先诊断；用户明确确认“修复、打包并更新3081”。首跑1/9并非全无原料，主要K/s来源契约错配和空cards/extraction阻断修订。报告“三ID按多数”和0.7同因、4186字符必为过大均未照单采信。
+- combined-writing支持当批唯一K→s，多窗需逐字唯一定位，未知/外批拒；prompt不再暴露sourceEvidenceId，context第二参数保留源审计。referenceAudit及错误ID样例落盘。卡池纯读恢复valid stored→checked extraction→exact original batches/draft-N，revise无卡不调LLM，旧稿/锁/expected_version保留。
+- 有卡空正文最多一次本章补写（首批最多6卡，6000软分组，不声称硬上限）；无正文故障与真实缺料分开，部分稿/failed/contentStatus在状态和MD/DOCX/HTML一致。HTML合法ID乱序程序归位，显式retry真正绕过slides缓存，换主题仍缓存，无自动多轮演示重试。
+- 私有真实run122ea6e0草稿离线回放：七章原0卡分别恢复5/11/13/13/6/24/8，业务挑战仍需正文补写；无授权案例仍0，企业仍4。临时模拟空卡池可恢复；原report/run与9章cards/chapter20文件SHA前后一致，外部人工已恢复8/9稿不动。未真实调模型/后端，不把离线回放当新全篇成功。
+- README/output-guide/backlog/实施方案/test-record同步，源码升0.10.1，global仍0.11.0，无新增依赖；验证、包和3081部署信息随后补记。不动日常3080和无关未跟踪资料。
+
+- 最终Node22全套250/250、39模块语法、差异和6份文档链接通过。成功revise刷新当前诊断，旧原因转历史字段，其他failed章仍令整体partial_draft；检索失败无片段也作为failed/generation_error，MD/DOCX/HTML不计缺料。3081切换前备份T/wlyd-0101-profile-20261019-c34ufjt0，原版0.10.0/PID81837，已知工作区无活动claim；打包后再安装。
+
+- 0.10.1包291396字节/84文件，SHA-256 56cb92320721c2ff3f1b0fa77ddb3432286cbfca3810656dcf17ebd4df25da5e，独立包审查和84安装文件一致性通过。3081从PID81837重启为95251，HTTP就绪401，浏览器确认v0.10.1启用/组件运行中；Node22安装烟测8工具/1skill/六章预览与K归一化1卡1正文通过。旧run不动，未真实全篇生成；日常3080仍25058，包和备份保留。部署信息为打包后补记，同版本不重打。

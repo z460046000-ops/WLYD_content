@@ -226,6 +226,44 @@ test('output model uses its own route and theme changes reuse the same source sl
   assert.equal(await readFile(path.join(f.dir, 'report.json'), 'utf8'), f.originalReport)
 })
 
+test('retry explicitly rebuilds a degraded slide plan while normal reuse and theme changes keep the cache', async t => {
+  const f = await deliveryFixture()
+  let builds = 0, selections = 0
+  const delivery = createDeliveryService({ ...f, build: async ({ snapshot }) => {
+    builds++
+    return buildPresentation({ snapshot, request: async ({ units }) => {
+      selections++
+      if (selections === 1) throw new Error('模拟首次演示精简超时')
+      return { slides: units.map(unit => ({ unitIds: [unit.id] })) }
+    } })
+  }, render: localRender })
+  t.after(() => delivery.close())
+  const first = await delivery.submit({ run_id: f.runId }, f.exec)
+  assert.equal((await f.jobs.settled(first.jobId)).status, 'completed')
+  const firstManifest = await currentDelivery(f.agent, f.runId)
+  const firstPlan = await readRecord(firstManifest.html.planPath)
+  assert.equal(firstPlan.slides[0].mode, 'source-pagination')
+  assert.match(firstPlan.warnings[0], /模拟首次演示精简超时/u)
+  const reused = await delivery.submit({ run_id: f.runId }, f.exec)
+  assert.equal(reused.reused, true)
+  assert.equal(reused.exportId, first.exportId)
+  const themed = await delivery.submit({ run_id: f.runId, theme: 'swiss' }, f.exec)
+  assert.equal((await f.jobs.settled(themed.jobId)).status, 'completed')
+  assert.equal((await currentDelivery(f.agent, f.runId)).reusedPresentation, true)
+  assert.equal(builds, 1); assert.equal(selections, 1)
+  const retry = await delivery.submit({ run_id: f.runId, theme: 'swiss', retry: true }, f.exec)
+  assert.equal((await f.jobs.settled(retry.jobId)).status, 'completed')
+  const retriedManifest = await currentDelivery(f.agent, f.runId)
+  const retriedPlan = await readRecord(retriedManifest.html.planPath)
+  assert.notEqual(retry.exportId, themed.exportId)
+  assert.equal(retriedManifest.reusedPresentation, undefined)
+  assert.equal(builds, 2); assert.equal(selections, 2)
+  assert.equal(retriedPlan.slides[0].mode, 'extractive-selection')
+  assert.deepEqual(retriedPlan.warnings, [])
+  assert.equal(await readFile(path.join(f.dir, 'report.json'), 'utf8'), f.originalReport)
+  assert.equal(await readFile(firstManifest.html.planPath, 'utf8'), JSON.stringify(firstPlan, null, 2))
+})
+
 test('delivery rejects another user, revoked KB authorization and mismatched requested content hash', async t => {
   const f = await deliveryFixture()
   const delivery = createDeliveryService({ ...f, build: async ({ snapshot }) => presentationPlan(snapshot), render: localRender })

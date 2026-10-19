@@ -60,15 +60,16 @@ export function documentView(snapshot) {
       sections.push({ key: node.key, title: headingText(node.title || section.title || node.key), depth,
         status, statusLabel: chapterLabels[status] || `章节状态：${status}`, version: section.version,
         approvalLabel: approved ? '用户已确认' : '待用户确认', blocks,
-        inputNeeded: section.inputNeeded || null, hasBody })
+        inputNeeded: section.inputNeeded || null, inputLabel: section.inputNeeded?.kind === 'generation_error' || status === 'failed' ? '生成故障' : '待补材料', hasBody })
       visit(list(node.children), depth + 1)
     }
   }
   visit(snapshot.outline, 1)
   for (const key of byKey.keys()) if (!seen.has(key)) throw new Error(`文案快照含目录外章节：${key}`)
   const bodyCount = sections.filter(section => section.hasBody).length
-  const materialCount = sections.filter(section => !section.hasBody && (section.inputNeeded || section.status === 'needs_input')).length
-  const pendingCount = sections.filter(section => !section.hasBody && !section.inputNeeded && section.status !== 'omitted').length
+  const materialCount = sections.filter(section => !section.hasBody && section.inputLabel !== '生成故障' && (section.inputNeeded || section.status === 'needs_input')).length
+  const failureCount = sections.filter(section => !section.hasBody && section.inputLabel === '生成故障').length
+  const pendingCount = sections.filter(section => !section.hasBody && !section.inputNeeded && section.status !== 'omitted' && section.status !== 'failed').length
   const review = snapshot.assemblyReview || {}
   const reviewLabel = ['pending', 'running'].includes(review.status) ? '关联复核尚未完成'
     : review.passed === true ? '关联复核已完成，仍需用户确认业务内容'
@@ -76,7 +77,7 @@ export function documentView(snapshot) {
         : review.status === 'failed' ? '关联复核未完成'
           : review.passed === false ? '关联复核存在待处理事项' : '关联复核状态待确认'
   return { title: headingText(snapshot.title), sections, sources,
-    notes: [`正文覆盖：${bodyCount}/${sections.length} 章；待补材料：${materialCount} 章；其他未生成：${pendingCount} 章。`,
+    notes: [`正文覆盖：${bodyCount}/${sections.length} 章；待补材料：${materialCount} 章；生成故障：${failureCount} 章；其他未生成：${pendingCount} 章。`,
       reviewLabel + '。', '本文件保留文案的待审、待确认及能力边界标记。材料卡不代表已完成正文。'] }
 }
 
@@ -87,7 +88,7 @@ export function renderMarkdown(snapshot) {
     lines.push(`${'#'.repeat(Math.min(section.depth + 1, 6))} ${escaped(section.title)}`, '')
     lines.push(`> ${section.statusLabel}；${section.approvalLabel}${section.version === undefined ? '' : `；章节版本 ${section.version}`}。`, '')
     if (section.inputNeeded) {
-      lines.push(`**待补材料**：${text(section.inputNeeded.reason) || '尚缺本章资料'}`, '')
+      lines.push(`**${section.inputLabel}**：${text(section.inputNeeded.reason) || '尚缺本章资料'}`, '')
       for (const question of list(section.inputNeeded.questions)) lines.push(`- ${text(question)}`)
       if (list(section.inputNeeded.questions).length) lines.push('')
       if (section.inputNeeded.nextAction) lines.push(text(section.inputNeeded.nextAction), '')

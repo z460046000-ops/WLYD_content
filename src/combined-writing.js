@@ -52,11 +52,29 @@ const uniqueRefs = refs => [...new Map(refs.map(ref => [JSON.stringify(ref), ref
 /** Resolve only this batch's aliases; model labels do not themselves prove the resulting prose. */
 export function materializeCombined(raw, inputCards, evidence, node, rule = {}) {
   const reviewItems = [], excludedFacts = [], aliases = new Map(), rejected = new Set(), cardPool = new Map()
+  const referenceAudit = { normalized: [], rejected: [] }
   const originals = new Map(evidence.map(source => [source.id, source]))
   const sources = new Map(list(inputCards).filter(card => typeof card?.id === 'string' && String(card.text || '').trim()
     && list(card.evidence).length && list(card.evidence).every(ref => typeof ref?.quote === 'string' && ref.quote.length >= 6
       && ref.quote === card.text && originals.get(ref.id)?.content.includes(ref.quote))).map(card => [card.id, card]))
   if (sources.size !== list(inputCards).length) reviewItems.push('部分输入原文卡无法核对，已排除')
+
+  const rejectReference = (factAlias, sourceCardIds, reason) => {
+    referenceAudit.rejected.push({ factAlias, sourceCardIds, reason })
+    rejected.add(factAlias)
+  }
+  const resolveSource = (id, claim, sourceIds) => {
+    if (sources.has(id)) return { id }
+    // A knowledge chunk may have several windows in this batch. Never choose the first or widen its scope.
+    const matches = [...sources.values()].filter(card => card.sourceEvidenceId === id && list(card.evidence).some(ref => ref.id === id))
+    if (!matches.length) return { error: 'unknown_source_reference' }
+    const quotes = strings([...list(claim.evidence).filter(ref => ref?.id === id).map(ref => ref?.quote),
+      ...(sourceIds.length === 1 ? [claim.quote, claim.sourceQuote] : [])]).filter(quote => quote.length >= 6)
+    const located = quotes.length ? matches.filter(card => quotes.every(quote => card.text.includes(quote))) : matches
+    if (!located.length) return { error: 'source_quote_mismatch' }
+    if (located.length !== 1) return { error: 'ambiguous_source_reference' }
+    return { id: located[0].id, reason: quotes.length ? 'unique_quote_window' : 'unique_source_evidence' }
+  }
 
   const add = (fact, alias) => {
     const routed = routeFacts([fact], node, rule)
@@ -82,12 +100,30 @@ export function materializeCombined(raw, inputCards, evidence, node, rule = {}) 
     const alias = typeof claim?.id === 'string' ? claim.id.trim() : ''
     if (!alias || alias.length > 128 || counts.get(alias) !== 1 || sources.has(alias)) {
       if (alias && !sources.has(alias)) rejected.add(alias)
+      referenceAudit.rejected.push({ factAlias: alias, sourceCardIds: strings(claim?.sourceCardIds), reason: 'invalid_fact_alias' })
       reviewItems.push(`事实别名无效或重复，已排除：${alias || '未提供ID'}`); continue
     }
-    const sourceIds = strings(claim.sourceCardIds)
-    if (sourceIds.some(id => !sources.has(id)) || !sourceIds.length && claim.supportMode !== 'candidate') {
-      rejected.add(alias); reviewItems.push(`事实 ${alias} 引用了本批以外或缺失的原文卡，已排除`); continue
+    if (claim.sourceCardIds !== undefined && (!Array.isArray(claim.sourceCardIds)
+      || claim.sourceCardIds.some(id => typeof id !== 'string' || !id.trim()))) {
+      rejectReference(alias, strings(claim.sourceCardIds), 'invalid_source_reference_shape')
+      reviewItems.push(`事实 ${alias} 的 sourceCardIds 必须为本批原文卡ID字符串数组，已排除`); continue
     }
+    const originalIds = strings(claim.sourceCardIds), sourceIds = [], normalized = []
+    let referenceError
+    for (const id of originalIds) {
+      const resolved = resolveSource(id, claim, originalIds)
+      if (resolved.error) { referenceError = resolved.error; break }
+      if (!sourceIds.includes(resolved.id)) sourceIds.push(resolved.id)
+      if (resolved.reason) normalized.push({ factAlias: alias, from: id, to: resolved.id, reason: resolved.reason })
+    }
+    if (referenceError || !sourceIds.length && claim.supportMode !== 'candidate') {
+      rejectReference(alias, originalIds, referenceError || 'missing_source_reference')
+      reviewItems.push(referenceError === 'ambiguous_source_reference'
+        ? `事实 ${alias} 的来源ID对应本批多个原文窗口，缺少可唯一定位的逐字引文，已排除`
+        : `事实 ${alias} 引用了本批以外、缺失或无法定位的原文卡，已排除`); continue
+    }
+    referenceAudit.normalized.push(...normalized)
+    for (const item of normalized) reviewItems.push(`事实 ${alias} 的来源引用已按本批${item.reason === 'unique_quote_window' ? '唯一逐字引文' : '唯一原文卡'}归一化：${item.from} → ${item.to}`)
     const refs = uniqueRefs(sourceIds.flatMap(id => sources.get(id).evidence))
     const fact = checkedFacts({ facts: [{ ...claim, evidence: refs }] }, evidence)[0]
     if (!fact) { rejected.add(alias); reviewItems.push(`事实 ${alias} 无法核对，已排除`); continue }
@@ -134,5 +170,5 @@ export function materializeCombined(raw, inputCards, evidence, node, rule = {}) 
     reviewItems.push(...warnings)
   }
   const cards = [...cardPool.values()]
-  return { cards, facts: cards.map(({ id, ...fact }) => fact), blocks, reviewItems: strings([...reviewItems, ...strings(raw?.reviewItems)]), excludedFacts }
+  return { cards, facts: cards.map(({ id, ...fact }) => fact), blocks, reviewItems: strings([...reviewItems, ...strings(raw?.reviewItems)]), excludedFacts, referenceAudit }
 }

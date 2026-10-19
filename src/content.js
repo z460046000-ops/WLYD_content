@@ -84,12 +84,14 @@ export function reportText(report) {
   const byOutcome = new Map(outcomes.map(row => [row.key, row]))
   const incomplete = outcomes.filter(row => !['completed', 'omitted'].includes(row.status))
   const lines = [`# ${report.title}`, '']
-  if (report.contentCoverage) lines.push(`> 正文覆盖：${report.contentCoverage.proseChapters}/${report.contentCoverage.totalChapters} 章；待补材料卡：${report.contentCoverage.needsInputChapters} 章。材料卡不代表正文已完成。`, '')
+  if (report.contentCoverage) lines.push(`> 正文覆盖：${report.contentCoverage.proseChapters}/${report.contentCoverage.totalChapters} 章；待补材料卡：${report.contentCoverage.needsInputChapters} 章；生成故障：${report.contentCoverage.failedChapters || 0} 章。材料卡不代表正文已完成。`, '')
   if (report.reviewStatus === 'draft_building') {
     lines.push('> 初稿正在逐章生成：已完成的章节可先阅读，其余章节会继续补齐。', '')
   } else if (report.reviewStatus === 'draft_reviewing') {
     lines.push('> 初稿已交付，关联复核正在后台进行。可先阅读，复核结束后再修改章节。', '')
-  } else if (report.qualityMode && report.qualityMode !== 'strict') {
+  } else if (report.reviewStatus === 'partial_draft' && report.qualityMode && report.qualityMode !== 'strict') {
+    lines.push('> 部分初稿：有章节因生成故障未完成，已保留其他正文。故障不代表知识库缺料，可按章恢复。', '')
+  } else if (report.qualityMode && report.qualityMode !== 'strict' && report.reviewStatus !== 'failed') {
     lines.push('> 可编辑初稿：各章已保留正文或待补材料卡。未验证和待确认内容需逐章核对后使用。', '')
   } else if (report.reviewStatus === 'failed') {
     lines.push('> 生成未完成：没有可校验正文。以下保留已确认目录，待恢复后补充。', '')
@@ -114,6 +116,7 @@ export function reportText(report) {
       else if (outcome?.status === 'pending') lines.push(['cancelled', 'failed'].includes(report.reviewStatus)
         ? '> 本章尚未生成，可恢复任务后继续。' : '> 本章正在生成，稍后补齐。', '')
       else if (outcome?.status === 'draft_unverified') lines.push('> 本章为待审初稿，可按章提出修改要求。', '')
+      else if (outcome?.status === 'failed') lines.push('> 生成故障：本章尚未完成，不能据此认定缺料。可按章恢复，详细原因见审核记录。', '')
       else if (outcome?.status === 'needs_input') {
         lines.push(`> 待补材料：${section?.inputNeeded?.reason || outcome.error || '尚缺本章资料'}`, '')
         for (const question of section?.inputNeeded?.questions || []) lines.push(`- ${question}`)

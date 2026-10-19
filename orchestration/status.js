@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 /** Keep raw run/model traces on disk and in explicit detail views, outside normal model context. */
 export function statusSummary(state) {
   const coverage = state.contentCoverage
-  const count = coverage ? Object.fromEntries(['totalChapters', 'proseChapters', 'prosePercent', 'needsInputChapters', 'partialChapters', 'pendingChapters'].map(key => [key, coverage[key]])) : undefined
+  const count = coverage ? Object.fromEntries(['totalChapters', 'proseChapters', 'prosePercent', 'contentStatus', 'needsInputChapters', 'failedChapters', 'partialChapters', 'pendingChapters'].map(key => [key, coverage[key]])) : undefined
   return { runId: state.runId, kind: state.kind || (state.files ? 'ingest' : 'outline-plan'), status: state.status,
     ...(state.runtimeVersion ? { runtimeVersion: state.runtimeVersion, contractVersion: state.contractVersion } : {}),
     ...(state.jobId ? { jobId: state.jobId } : {}),

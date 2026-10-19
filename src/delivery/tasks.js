@@ -117,7 +117,7 @@ export function createDeliveryService({ jobs, client, llm, modelRoute, build = b
         try {
           manifest.status = 'rendering'; manifest.html.status = 'running'; await saveManifest(outputDir, manifest)
           let plan
-          if (previous && !previous.stale && previous.rendererVersion === rendererVersion && previous.html?.planPath) {
+          if (!args.retry && previous && !previous.stale && previous.rendererVersion === rendererVersion && previous.html?.planPath) {
             try { plan = JSON.parse(await readFile(previous.html.planPath, 'utf8')) } catch { /* Rebuild only the presentation. */ }
             if (plan && validatePresentation(plan, snapshot).length) plan = null
           }

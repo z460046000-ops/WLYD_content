@@ -39,7 +39,7 @@ export async function renderDocx(snapshot, options = {}) {
     children.push(heading(section.title, section.depth))
     children.push(paragraph(`${section.statusLabel}；${section.approvalLabel}${section.version === undefined ? '' : `；章节版本 ${section.version}`}。`))
     if (section.inputNeeded) {
-      children.push(paragraph(`待补材料：${section.inputNeeded.reason || '尚缺本章资料'}`, { bold: true }))
+      children.push(paragraph(`${section.inputLabel}：${section.inputNeeded.reason || '尚缺本章资料'}`, { bold: true }))
       for (const question of section.inputNeeded.questions || []) children.push(paragraph(String(question), { bullet: { level: 0 } }))
       if (section.inputNeeded.nextAction) children.push(paragraph(section.inputNeeded.nextAction))
     }

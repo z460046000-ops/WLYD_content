@@ -61,7 +61,7 @@ dialog article{border-top:1px solid #c9cfc8;margin-top:18px;padding-top:10px}
 
 function pageHtml(slide, index) {
   const boundaries = list(slide.boundaries)
-  const mode = slide.kind === 'material-card' ? '待补材料' : slide.mode === 'source-pagination' ? '原文分页 · 未精简' : '关键点演示'
+  const mode = slide.kind === 'material-card' ? slide.status === 'failed' ? '生成故障' : '待补材料' : slide.mode === 'source-pagination' ? '原文分页 · 未精简' : '关键点演示'
   const points = list(slide.points).filter(point => point.text !== slide.title || list(slide.points).length === 1)
   return `<section class="slide${index % 2 === 1 ? ' light' : ''}" data-slide-id="${escapeHtml(slide.id)}" data-dur="5" data-tr="push">
   <div class="over" data-fx="fade"><span class="chapter-title">${escapeHtml(slide.sectionTitle)}</span><span class="mode-tag">${escapeHtml(mode)}</span></div>
