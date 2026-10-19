@@ -569,3 +569,13 @@
 
 - 包`releases/wlyd-dsh-material-knowledge-assembly-0.11.1.tgz`：429974字节/115文件，SHA256 `99e7b313f46855d6fe0302c34f52d88458503dadbe92951c4cd2414764dea555`。包内文件打包时与源码逐字节一致，两套vendor哈希核对通过；无测试、用户材料、凭据、依赖或pycache。临时解包独立加载8工具1skill3controller，预览0.11.1；实际MD/DOCX和schema2概括HTML、实质条件、旧schema拒绝与失败退路全部通过。
 - 本轮未安装重启，3081仍0.10.1；原run/已交付文件保留。切换后可用原runId仅output重导出，主线/事实需用户检查，不承诺真实模型比例或耗时。文案规则与SVG实现未变；后续图文第二批和真实模型验收仍待用户安排。
+
+
+## 2026-10-19：0.11.1部署至当前3080
+
+- 用户指令“重启dsh，并且加载这个最新版本插件”。读取实际进程与profile后，当前3080/web已装0.11.0，按该环境升级至0.11.1；3081/wlyd-assembly-021-browser保持原PID95251与0.10.1。
+- 安装前将package、锁文件和profile patch等保存至`/Users/zhangzhengao/.dsh/backups/wlyd-0111-web-20261019-162828`。使用原生`dsh plugin --profile web add`安装既有tgz；115个安装文件与包逐字节相同，其他直接依赖、组合包和cordis.patch.yml不变。安装器提示既有BrowserSkill peer依赖告警，本次未为它改依赖。
+- 仅向原3080/PID56516发送SIGTERM，正常退出后用原启动目录/包装器/profile/端口重启为PID4159。3080恢复监听，未认证HTTP401、用DSH合法启动入口鉴权后HTTP200；未输出或记录启动凭据到本文。
+- 当前运行进程的只读RPC `pluginInventory/list`、`pluginManager/listPlugins`均返回目标enabled=true、fiberPhase=active；`pluginManager/listBundles`返回0.11.1。安装路径独立加载预览也返回runtimeVersion0.11.1、8工具/1skill/3controller，不调用真实模型或后端。
+- 浏览器控制两次出现CDP超时，未把它当成插件故障或界面验收通过；已用原生打开工具请求在Codex打开当前3080，并通过上述真实运行接口完成加载核对。没有重跑旧稿或覆盖运行产物，真实概括/业务语义仍需用户测试。
+- README、架构、输出说明、待办和本记忆同步部署状态；安装包保持原哈希，不重打包。

@@ -2,7 +2,7 @@
 
 独立 DSH/Cordis 插件：导入材料、同步项目知识库，按规则生成可审阅的解决方案正文。当前文案输出 Markdown/JSON，并独立导出 DOCX 和可自由翻页的演示 HTML；可手动从同版正文提炼业务/产品两张 SVG；图形编辑器、自动嵌图和 PPTX/PDF 导出尚未实现，不依赖旧插件或 HTML Anything。
 
-**当前源码为 0.11.1：HTML支持真正概括改写，MD/DOCX清理逐段引用和审核提示。** 演示可合并段落、提炼短标题/短要点，保留来源与必要条件；完整正文与出处仍可查。保留0.11.0手动两张SVG、0.10.2超时恢复。当前3081仍安装0.10.1，本轮不安装或重启、不改正在运行的任务或模型路由。验证和安装边界见[测试记录](docs/test-record.md)，实施范围见[超时与恢复方案](docs/timeout-recovery-plan-20261019.md)。
+**当前源码为 0.11.1：HTML支持真正概括改写，MD/DOCX清理逐段引用和审核提示。** 演示可合并段落、提炼短标题/短要点，保留来源与必要条件；完整正文与出处仍可查。保留0.11.0手动两张SVG、0.10.2超时恢复。2026-10-19已安装并重启当前3080（web profile），运行组件active；3081保留0.10.1。未改模型路由，真实概括效果仍待业务验收。验证和安装边界见[测试记录](docs/test-record.md)，实施范围见[超时与恢复方案](docs/timeout-recovery-plan-20261019.md)。
 
 全局规则已更新到 **0.11.0**，旧 `planId` 的规则指纹不再匹配：从0.8.0升级后重新 `plan → confirm → generate`，可以复用原导入材料，不必重复上传。
 
@@ -16,8 +16,9 @@
 | Cordis 组件 / 工具前缀 | `wlyd-material-knowledge-assembly` / `wlyd_assembly_*` |
 | DSH 插件页名称 | `material-knowledge-assembly` |
 | 日常安装目录 | `~/.dsh/profiles/web/node_modules/@wlyd/dsh-material-knowledge-assembly/` |
-| 本机测试环境 | `http://127.0.0.1:3081/`，profile 为 `wlyd-assembly-021-browser`（历史名称）；2026-10-19 已加载0.10.1 |
-| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.11.1.tgz`；SHA-256 见 `releases/SHA256SUMS`，本轮不安装 |
+| 当前使用环境 | `http://127.0.0.1:3080/`，profile `web`，2026-10-19已加载0.11.1、组件active |
+| 保留测试环境 | `http://127.0.0.1:3081/`，profile `wlyd-assembly-021-browser`，仍0.10.1，本次未重启 |
+| 最新安装包 | `releases/wlyd-dsh-material-knowledge-assembly-0.11.1.tgz`；SHA-256 见 `releases/SHA256SUMS`，已安装至3080 |
 | 历史安装包 / 校验 | `releases/` / `releases/SHA256SUMS` |
 | 运行产物 | **当前 DSH 会话工作区**的 `artifacts/material-knowledge-assembly/runs/<runId>/` |
 
@@ -69,7 +70,7 @@ rules/
 - 所用来源的条件/状态由程序继承；校验未知来源、新数字/英文名称、明显否定/授权反转和无关新能力。属于有限规则筛查，不能证明完整语义一致，概括仍是待审稿。
 - 新演示计划schema=2，旧版全文分页不再复用。概括失败只降级该批原文分页，保留完整文档；不假称精简成功。已存在的文件不自动覆盖，安装新版本后重新调用output即可，原run不必重组稿。
 
-详细参数、软目标与限制见[输出说明](docs/output-guide.md)。本轮未安装或重启3081。
+详细参数、软目标与限制见[输出说明](docs/output-guide.md)。0.11.1已加载3080；3081保持原状。
 
 ### 0.11.0 手动两张SVG（第一批）
 
@@ -315,16 +316,16 @@ artifacts/material-knowledge-assembly/runs/<runId>/
 
 ## 5. 安装与配置
 
-Node.js 22+、DSH 和内容中台账号为前提。0.11.1安装命令如下（供下次切换使用，本轮未执行）；当前3081仍为0.10.1：
+Node.js 22+、DSH 和内容中台账号为前提。0.11.1已安装到当前3080的web profile，命令如下；独立3081仍为0.10.1：
 
 ```bash
 shasum -a 256 releases/wlyd-dsh-material-knowledge-assembly-0.11.1.tgz
-dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.11.1.tgz"
+dsh plugin --profile web add "$PWD/releases/wlyd-dsh-material-knowledge-assembly-0.11.1.tgz"
 ```
 
 校验值以 `releases/SHA256SUMS` 为准。这份包的文档是打包时快照；发布后补记的安装结果以仓库当前 README 和测试记录为准。若修改源码或文档，应升新版本再打包，避免同名包产生不同哈希。
 
-启动命令：`dsh --profile wlyd-assembly-021-browser --port 3081 --no-open`。以后切换版本时完整重启对应 DSH，刷新页面并核对工具运行版本。本次未修改日常3080的插件或进程；历史安装与真实成稿验证见 [测试记录](docs/test-record.md)。
+启动命令：`dsh --profile web --port 3080 --no-open`。2026-10-19按用户指令重启3080并加载0.11.1，配置已备份、其他直接依赖/组合包与profile patch不变；3081未参与。刷新页面后可测试，历史安装与真实成稿验证见[测试记录](docs/test-record.md)。
 
 配置优先级：插件 config → 环境变量 → `$DSH_HOME/.env`。
 
@@ -352,7 +353,7 @@ dsh plugin --profile wlyd-assembly-021-browser add "$PWD/releases/wlyd-dsh-mater
 ## 6. 仍未打通与验收边界
 
 - 本版新增的是本机任务去重、检查点与显式恢复；DSH 退出不会继续后台生成。没有云端队列、远程调度或跨设备自动接续；成功章已可通过 chapter action=revise 定向修改。旧版任务没有新版检查点时需重新规划启动。
-- 当前3081仍为0.10.1；0.11.1仅源码、自动化及安装包验证，本轮未启动真实模型生成。实际成稿质量、token与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、安装与自动化结果见测试记录。
+- 当前3080已加载0.11.1并核对运行组件active，3081仍为0.10.1；本轮未启动真实模型生成。实际成稿质量、token与耗时收益，以及低思考是否被网关执行仍待测试，不承诺固定提速比例。打包、安装与自动化结果见测试记录。
 - 知识库关联候选和本地词面选段可能漏材料；原文回读、Wiki/图谱和公开检索未接，缺少来源的政策不能冒充检索结果。
 - UTF-8 文本、Markdown、DOCX、文字 PDF、PPTX、XLSX、ZIP 支持文字提取；不保证图表、图片文字、版式完整。图片/扫描件 OCR、DMG、旧 Office、音视频、链接抓取未接。
 - 单批 100 文件、单文件 500 MB；ZIP 最多 1000 项/共 1 GB。入口限额不证明任意格式 500 MB 全链路可用，真实大文件链路待验收。
